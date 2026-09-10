@@ -78,6 +78,8 @@ def test_process_text_streaming():
     import app  # 会加载 Whisper 模型（已缓存）
 
     class FakeBot:
+        status = ""  # 与真实 ChatBot 接口保持一致
+
         async def chat_stream(self, user_text):
             yield "你好，"
             yield "我是小音。"
