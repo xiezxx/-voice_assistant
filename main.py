@@ -21,7 +21,7 @@ from llm import ChatBot
 from tts import SpeechSynthesizer
 from speech_utils import sentence_stream
 from conversation_store import save_conversation, load_conversation, clear_conversation
-from wakeword import WakeWordListener, wakeword_available
+from wakeword import create_wake_listener
 
 
 async def _wait_for_trigger(loop, wake: WakeWordListener | None) -> str:
@@ -146,15 +146,14 @@ async def main():
         bot.conversation = saved_conversation
         print("[记忆] 已恢复上次对话上下文")
 
-    # 唤醒词（可选：未配置时自动降级为手动触发）
+    # 唤醒词（默认开启：Picovoice 配置齐时低延迟，否则用 ASR 关键词方案）
     wake = None
     if Config.WAKE_WORD_ENABLED:
-        ok, reason = wakeword_available()
-        if ok:
-            wake = WakeWordListener()
-            print("[唤醒词] 「小音，小音」免提唤醒已开启")
+        wake, mode = create_wake_listener(stt)
+        if mode == "porcupine":
+            print("[唤醒词] Porcupine 模式已开启")
         else:
-            print(f"[提示] 唤醒词不可用（{reason}），按 Enter 手动开始")
+            print("[唤醒词] ASR 模式已开启（说「小音」唤醒，响应约1秒）")
 
     # 预加载 Whisper 模型（首次需要下载）
     stt.load()
@@ -180,6 +179,8 @@ async def main():
                     print("[对话已重置]")
                     continue
                 elif cmd == "":
+                    if wake is not None:
+                        wake.close()  # 释放麦克风给对话录音，待机时自动重开
                     await process_turn(recorder, stt, bot, tts, player)
                     save_conversation([], bot.conversation)
                 else:

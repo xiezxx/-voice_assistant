@@ -13,7 +13,7 @@
 - **语音打断**：CLI 模式播放时持续监听麦克风，用户一开口立即停止播报进入下一轮；Web 界面提供"停止播报"按钮
 - **Function Calling**：小音会自己调用工具——查天气（Open-Meteo 实时数据）、报时间日期、算数（AST 白名单安全计算）、汇率换算
 - **对话记忆**：对话自动保存到本地，重启/刷新后恢复上下文，随时可"重置对话"清空
-- **免提唤醒**：CLI 模式喊「小音，小音」即可唤醒开始对话（Picovoice Porcupine 自定义唤醒词）
+- **免提唤醒**：CLI 模式喊「小音」即可唤醒开始对话（默认 ASR 关键词方案，零配置）
 
 ## 快速开始
 
@@ -55,16 +55,13 @@ python main.py --voices   # 查看可选 TTS 音色
 
 CLI 模式下，AI 播报时**直接开口说话**即可打断，无需按键。
 
-## 免提唤醒（可选功能）
+## 免提唤醒
 
-喊「**小音，小音**」唤醒助手开始对话，无需按键。配置步骤：
+CLI 模式启动后进入**待机状态**，喊「**小音**」即唤醒开始对话，对话结束自动回到待机，无需按键。
 
-1. 免费注册 [Picovoice Console](https://console.picovoice.ai) → 复制 **AccessKey** 填入 `.env` 的 `PICOVOICE_ACCESS_KEY`
-2. 控制台 Porcupine 页面：语言选 **Chinese**，平台选 **Windows**，唤醒词填 `小音，小音` → 训练（秒级完成）→ 下载 `.ppn` 模型文件
-3. 把 `.ppn` 文件放到项目的 `models/` 目录（保持文件名与 `.env` 里 `WAKE_WORD_MODEL_PATH` 一致）
-4. `python main.py` 启动，看到"💤 待机中"即可喊「小音，小音」
+默认使用 **ASR 关键词方案**（零配置）：待机时能量门检测到说话 → Whisper 快速识别 → 文本含"小音"即唤醒，响应约 1 秒。`WAKE_WORD_ENABLED=0` 可关闭。
 
-未配置时自动降级为按 Enter 手动开始，不影响其他功能。
+可选 **Picovoice 低延迟方案**（延迟毫秒级，需注册 [Picovoice Console](https://console.picovoice.ai) 并训练「小音，小音」中文模型，把 `.ppn` 放到 `models/` 目录并在 `.env` 填 `PICOVOICE_ACCESS_KEY`），配置齐全时自动切换。
 
 ## 技术栈
 
