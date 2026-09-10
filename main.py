@@ -58,6 +58,8 @@ async def process_turn(
     interrupted = False
     try:
         async for sentence in sentence_stream(bot.chat_stream(user_text)):
+            if bot.status:
+                print(f"\r{bot.status}", end="", flush=True)
             parts.append(sentence)
             if len(parts) == 1:
                 print(f"\rAI: {sentence}", end="", flush=True)

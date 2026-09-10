@@ -84,7 +84,7 @@ async def process_voice(audio: tuple, history: list, voice: str):
         async for sentence in sentence_stream(bot.chat_stream(user_text)):
             parts.append(sentence)
             history[-1]["content"] = "🤖 " + "".join(parts)
-            yield history, "⏳ 正在生成...", None
+            yield history, bot.status or "⏳ 正在生成...", None
 
             # 合成当前句（失败则跳过播报，文字已显示）
             try:
@@ -133,7 +133,7 @@ async def process_text(text: str, history: list, voice: str):
         async for sentence in sentence_stream(bot.chat_stream(user_text)):
             parts.append(sentence)
             history[-1]["content"] = "🤖 " + "".join(parts)
-            yield history, "⏳ 正在生成...", None
+            yield history, bot.status or "⏳ 正在生成...", None
 
             try:
                 audio_path = await tts.synthesize(sentence)
