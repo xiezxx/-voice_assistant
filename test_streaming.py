@@ -38,6 +38,7 @@ def test_chat_stream_early_break():
         async def create(self, **kwargs):
             class Delta:
                 content = "你好"
+                tool_calls = None
             class Choice:
                 delta = Delta()
             class Chunk:
