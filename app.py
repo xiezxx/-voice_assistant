@@ -26,6 +26,7 @@ from stt import SpeechRecognizer
 from llm import ChatBot
 from tts import SpeechSynthesizer
 from speech_utils import sentence_stream, audio_duration_sec
+from conversation_store import save_conversation, load_conversation, clear_conversation
 
 # ── 全局初始化 ──────────────────────────────────────────────
 
@@ -35,6 +36,10 @@ stt.load()
 
 bot = ChatBot()
 tts = SpeechSynthesizer()
+
+# 恢复上次会话（界面历史 + API 上下文）
+_loaded_history, _loaded_conversation = load_conversation()
+bot.conversation = _loaded_conversation
 
 # 可选音色列表
 VOICE_CHOICES = [
@@ -100,6 +105,7 @@ async def process_voice(audio: tuple, history: list, voice: str):
             prev_end = time.time() + audio_duration_sec(audio_path, len(sentence))
     except Exception as e:
         history[-1]["content"] = f"⚠️ LLM 调用失败：{e}"
+        save_conversation(history, bot.conversation)
         yield history, "⚠️ LLM 调用失败", None
         return
     t_llm = time.time() - t0
@@ -107,11 +113,13 @@ async def process_voice(audio: tuple, history: list, voice: str):
     full_reply = "".join(parts)
     if not full_reply:
         history[-1]["content"] = "🤖 （暂无回复）"
+        save_conversation(history, bot.conversation)
         yield history, "⚠️ 模型返回空回复", None
         return
 
     status = f"✅ STT: {t_stt:.1f}s | LLM: {t_llm:.1f}s | 已完成播报"
     yield history, status, None
+    save_conversation(history, bot.conversation)
 
 
 async def process_text(text: str, history: list, voice: str):
@@ -147,6 +155,7 @@ async def process_text(text: str, history: list, voice: str):
             prev_end = time.time() + audio_duration_sec(audio_path, len(sentence))
     except Exception as e:
         history[-1]["content"] = f"⚠️ LLM 调用失败：{e}"
+        save_conversation(history, bot.conversation)
         yield history, "⚠️ LLM 调用失败", None
         return
     t_llm = time.time() - t0
@@ -154,16 +163,19 @@ async def process_text(text: str, history: list, voice: str):
     full_reply = "".join(parts)
     if not full_reply:
         history[-1]["content"] = "🤖 （暂无回复）"
+        save_conversation(history, bot.conversation)
         yield history, "⚠️ 模型返回空回复", None
         return
 
     status = f"✅ LLM: {t_llm:.1f}s | 已完成播报"
     yield history, status, None
+    save_conversation(history, bot.conversation)
 
 
 def reset_conversation():
-    """重置对话上下文。"""
+    """重置对话上下文，并清除已保存的会话。"""
     bot.reset()
+    clear_conversation()
     return [], "🔄 对话已重置", None
 
 
@@ -191,8 +203,8 @@ with gr.Blocks() as demo:
         """
     )
 
-    # 状态
-    chat_state = gr.State([])
+    # 状态（初始为上次保存的对话）
+    chat_state = gr.State(_loaded_history)
 
     with gr.Row():
         # ── 左侧：输入区 ──

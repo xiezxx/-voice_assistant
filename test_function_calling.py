@@ -4,7 +4,7 @@
 import asyncio
 import re
 
-from tools import calculate, get_time, get_weather, TOOL_SCHEMAS
+from tools import calculate, get_time, get_weather, get_exchange_rate, TOOL_SCHEMAS
 
 
 def test_calculate():
@@ -28,7 +28,7 @@ def test_get_time():
 
 def test_schemas():
     names = [s["function"]["name"] for s in TOOL_SCHEMAS]
-    assert names == ["get_weather", "get_time", "calculate"], names
+    assert names == ["get_weather", "get_time", "calculate", "get_exchange_rate"], names
     print("✓ 工具定义:", names)
 
 
@@ -39,6 +39,18 @@ async def test_weather():
     r2 = await get_weather("不存在城市xyz")
     assert r2.startswith("没有查到"), r2
     print("✓ 未知城市兜底:", r2)
+
+
+async def test_exchange_rate():
+    r = await get_exchange_rate("USD", "CNY", 100)
+    assert "100 USD =" in r and "CNY" in r, r
+    print("✓ 汇率工具:", r)
+    r2 = await get_exchange_rate("USD", "XYZ")
+    assert r2.startswith("不支持"), r2
+    print("✓ 未知货币兜底:", r2)
+    r3 = await get_exchange_rate("US", "CNY")
+    assert "格式不对" in r3, r3
+    print("✓ 非法代码兜底:", r3)
 
 
 async def test_deepseek_integration():
@@ -67,5 +79,6 @@ if __name__ == "__main__":
     test_get_time()
     test_schemas()
     asyncio.run(test_weather())
+    asyncio.run(test_exchange_rate())
     asyncio.run(test_deepseek_integration())
     print("\n全部通过 ✅")

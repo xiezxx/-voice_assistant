@@ -9,10 +9,17 @@ from collections.abc import AsyncIterator
 
 # 中文句子结束符（句号/问号/叹号/分号/换行）
 _SENT_END = re.compile(r"[。！？!?；;\n]")
+# 长句细分：缓冲区积累超过该长度时，允许在逗号处提前切开
+_MIN_COMMA_SPLIT = 18
+_COMMA = re.compile(r"[，,]")
 
 
 async def sentence_stream(chunks: AsyncIterator[str]):
-    """把流式文本切分成完整句子逐个产出，末尾残余单独产出。
+    """把流式文本切分成播报片段逐个产出，末尾残余单独产出。
+
+    规则：
+    1. 遇到句号/问号/叹号/分号/换行立即切分；
+    2. 长句积累超过 18 字时，允许在逗号处提前切开（降低首响延迟）。
 
     例：输入 "你好，我是小音。今天天气不错！" 依次产出
         "你好，我是小音。" 和 "今天天气不错！"
@@ -24,9 +31,14 @@ async def sentence_stream(chunks: AsyncIterator[str]):
         buffer += chunk
         while True:
             m = _SENT_END.search(buffer)
-            if not m:
+            idx = m.end() if m else None
+            if idx is None:
+                # 长句在逗号处提前切分：从阈值位置起找第一个逗号
+                comma = _COMMA.search(buffer, _MIN_COMMA_SPLIT - 1)
+                if comma:
+                    idx = comma.end()
+            if idx is None:
                 break
-            idx = m.end()
             sentence = buffer[:idx].strip()
             buffer = buffer[idx:]
             if sentence:

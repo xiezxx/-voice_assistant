@@ -21,6 +21,38 @@ def test_sentence_stream():
     print("✓ 句子切分:", result)
 
 
+def test_comma_split():
+    """长句应在逗号处提前切开，降低首响延迟。"""
+    from speech_utils import sentence_stream
+
+    async def long_chunks():
+        # 一个 40+ 字、无句号的长句，只有逗号
+        yield "根据劳动法规定，用人单位需要按时足额支付工资，"
+        yield "不得无故克扣或者拖欠，否则需要承担相应的法律责任"
+
+    result = asyncio.run(_collect(sentence_stream(long_chunks())))
+    assert len(result) >= 2, f"长句应被逗号切开: {result}"
+    assert all(len(s) >= 18 for s in result[:-1]), f"切分过碎: {result}"
+    print("✓ 长句逗号细分:", result)
+
+
+def test_conversation_store():
+    """会话持久化：保存后能完整恢复，清空后读取为空。"""
+    from conversation_store import save_conversation, load_conversation, clear_conversation
+
+    clear_conversation()
+    assert load_conversation() == ([], [])
+    history = [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好呀"}]
+    conv = [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好呀"}]
+    save_conversation(history, conv)
+    h, c = load_conversation()
+    assert h == history and c == conv, (h, c)
+    print("✓ 会话保存/恢复")
+    clear_conversation()
+    assert load_conversation() == ([], [])
+    print("✓ 会话清空")
+
+
 def test_audio_duration_fallback():
     from speech_utils import audio_duration_sec
     d = audio_duration_sec(r"C:\不存在\fake.mp3", text_len=10)
@@ -79,6 +111,7 @@ def test_process_text_streaming():
 
     class FakeBot:
         status = ""  # 与真实 ChatBot 接口保持一致
+        conversation = []  # 供 save_conversation 读取
 
         async def chat_stream(self, user_text):
             yield "你好，"
@@ -115,7 +148,9 @@ def test_process_text_streaming():
 
 if __name__ == "__main__":
     test_sentence_stream()
+    test_comma_split()
     test_audio_duration_fallback()
     test_chat_stream_early_break()
+    test_conversation_store()
     test_process_text_streaming()
     print("\n全部通过 ✅")

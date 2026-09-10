@@ -20,6 +20,7 @@ from stt import SpeechRecognizer
 from llm import ChatBot
 from tts import SpeechSynthesizer
 from speech_utils import sentence_stream
+from conversation_store import save_conversation, load_conversation, clear_conversation
 
 
 async def process_turn(
@@ -111,6 +112,12 @@ async def main():
     tts = SpeechSynthesizer()
     player = AudioPlayer()
 
+    # 恢复上次对话上下文
+    _, saved_conversation = load_conversation()
+    if saved_conversation:
+        bot.conversation = saved_conversation
+        print("[记忆] 已恢复上次对话上下文")
+
     # 预加载 Whisper 模型（首次需要下载）
     stt.load()
 
@@ -125,14 +132,17 @@ async def main():
             cmd = cmd.strip().lower()
 
             if cmd == "q":
-                print("再见！")
+                save_conversation([], bot.conversation)
+                print("再见！（对话上下文已保存）")
                 break
             elif cmd == "r":
                 bot.reset()
+                clear_conversation()
                 print("[对话已重置]")
                 continue
             elif cmd == "":
                 await process_turn(recorder, stt, bot, tts, player)
+                save_conversation([], bot.conversation)
             else:
                 print("按 Enter 说话，按 r 重置，按 q 退出")
 

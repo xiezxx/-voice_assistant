@@ -59,10 +59,43 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_exchange_rate",
+            "description": (
+                "查询货币汇率并换算金额。用户问汇率、人民币换美元、"
+                "100美元等于多少人民币时调用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_currency": {
+                        "type": "string",
+                        "description": "源货币代码（3位），例如 CNY、USD、EUR、JPY",
+                    },
+                    "to_currency": {
+                        "type": "string",
+                        "description": "目标货币代码（3位），例如 CNY、USD、EUR、JPY",
+                    },
+                    "amount": {
+                        "type": "number",
+                        "description": "要换算的金额，不填默认为 1",
+                    },
+                },
+                "required": ["from_currency", "to_currency"],
+            },
+        },
+    },
 ]
 
 # 工具名 → 界面展示名（用于状态栏提示）
-TOOL_DISPLAY = {"get_weather": "查询天气", "get_time": "查询时间", "calculate": "计算"}
+TOOL_DISPLAY = {
+    "get_weather": "查询天气",
+    "get_time": "查询时间",
+    "calculate": "计算",
+    "get_exchange_rate": "查询汇率",
+}
 
 
 async def execute_tool(name: str, arguments_json: str) -> str:
@@ -78,6 +111,12 @@ async def execute_tool(name: str, arguments_json: str) -> str:
             return calculate(args.get("expression", ""))
         if name == "get_weather":
             return await get_weather(str(args.get("city", "")))
+        if name == "get_exchange_rate":
+            return await get_exchange_rate(
+                str(args.get("from_currency", "")),
+                str(args.get("to_currency", "")),
+                args.get("amount"),
+            )
     except Exception as e:
         return f"工具执行失败: {e}"
     return f"未知工具: {name}"
@@ -161,6 +200,37 @@ async def get_weather(city: str) -> str:
             f"降水概率 {daily['precipitation_probability_max'][i]}%"
         )
     return "；".join(lines)
+
+
+async def get_exchange_rate(from_currency: str, to_currency: str, amount=None) -> str:
+    """查询汇率并换算金额（open.er-api.com，免费免 Key，每天更新）。"""
+    base = from_currency.strip().upper()
+    target = to_currency.strip().upper()
+    if len(base) != 3 or len(target) != 3 or not base.isalpha() or not target.isalpha():
+        return "货币代码格式不对，请用三位代码，例如 CNY、USD"
+
+    data = await asyncio.to_thread(
+        _http_get_json, f"https://open.er-api.com/v6/latest/{base}"
+    )
+    if data.get("result") != "success":
+        return f"没有查到货币「{base}」的汇率数据"
+
+    rates = data.get("rates") or {}
+    rate = rates.get(target)
+    if rate is None:
+        return f"不支持货币「{target}」，试试 USD、EUR、JPY 等常见货币"
+
+    try:
+        amt = float(amount) if amount is not None else 1.0
+    except (TypeError, ValueError):
+        amt = 1.0
+
+    result = amt * rate
+    update_time = str(data.get("time_last_update_utc", ""))[:10]
+    return (
+        f"{amt:g} {base} = {result:.2f} {target}（汇率 1 {base} = {rate:g} {target}，"
+        f"数据日期 {update_time}）"
+    )
 
 
 # ── 安全计算器（AST 白名单，杜绝 eval 注入）──────────────────
