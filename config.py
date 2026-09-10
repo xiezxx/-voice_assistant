@@ -19,6 +19,15 @@ class Config:
     VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.02"))
     SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "1.0"))
 
+    # 唤醒词（Picovoice Porcupine，唤醒词「小音，小音」）
+    WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "1") == "1"
+    PICOVOICE_ACCESS_KEY = os.getenv("PICOVOICE_ACCESS_KEY", "")
+    WAKE_WORD_MODEL_PATH = os.getenv(
+        "WAKE_WORD_MODEL_PATH",
+        str(Path(PROJECT_ROOT) / "models" / "xiao-yin-xiao-yin_zh_windows_v3_0_0.ppn"),
+    )
+    WAKE_WORD_SENSITIVITY = float(os.getenv("WAKE_WORD_SENSITIVITY", "0.5"))
+
     SAMPLE_RATE = 16000
     CHANNELS = 1
 

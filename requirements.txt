@@ -7,3 +7,4 @@ openai>=1.0.0
 edge-tts>=6.1.0
 python-dotenv>=1.0.0
 pygame>=2.5.0
+pvporcupine>=3.0.0

@@ -21,6 +21,34 @@ from llm import ChatBot
 from tts import SpeechSynthesizer
 from speech_utils import sentence_stream
 from conversation_store import save_conversation, load_conversation, clear_conversation
+from wakeword import WakeWordListener, wakeword_available
+
+
+async def _wait_for_trigger(loop, wake: WakeWordListener | None) -> str:
+    """等待一轮触发。
+
+    唤醒词模式下：轮询麦克风检测「小音，小音」，同时支持键盘按键；
+    普通模式下：等待回车。
+    """
+    if wake is None:
+        return (await loop.run_in_executor(None, input, ">>> ")).strip().lower()
+
+    print("💤 待机中：说「小音，小音」唤醒；按 r 重置、q 退出", flush=True)
+    try:
+        import msvcrt  # Windows 键盘轮询
+    except ImportError:
+        msvcrt = None
+    while True:
+        if wake.wait_for_wake_word(timeout=0.2):
+            print("\n🔔 检测到唤醒词「小音，小音」", flush=True)
+            return ""
+        if msvcrt is not None and msvcrt.kbhit():
+            ch = msvcrt.getch().decode("utf-8", errors="ignore").strip().lower()
+            if ch in ("\r", "\n"):
+                ch = ""
+            print(f"\n>>> {ch}", flush=True)
+            return ch
+        await asyncio.sleep(0)
 
 
 async def process_turn(
@@ -118,40 +146,54 @@ async def main():
         bot.conversation = saved_conversation
         print("[记忆] 已恢复上次对话上下文")
 
+    # 唤醒词（可选：未配置时自动降级为手动触发）
+    wake = None
+    if Config.WAKE_WORD_ENABLED:
+        ok, reason = wakeword_available()
+        if ok:
+            wake = WakeWordListener()
+            print("[唤醒词] 「小音，小音」免提唤醒已开启")
+        else:
+            print(f"[提示] 唤醒词不可用（{reason}），按 Enter 手动开始")
+
     # 预加载 Whisper 模型（首次需要下载）
     stt.load()
 
     print("\n[就绪] 开始对话吧！")
-    print("  [Enter] 开始说话  [r] 重置对话  [q] 退出\n")
+    if wake is None:
+        print("  [Enter] 开始说话  [r] 重置对话  [q] 退出\n")
 
     # 主循环
     loop = asyncio.get_running_loop()
-    while True:
-        try:
-            cmd = await loop.run_in_executor(None, input, ">>> ")
-            cmd = cmd.strip().lower()
+    try:
+        while True:
+            try:
+                cmd = await _wait_for_trigger(loop, wake)
 
-            if cmd == "q":
-                save_conversation([], bot.conversation)
-                print("再见！（对话上下文已保存）")
+                if cmd == "q":
+                    save_conversation([], bot.conversation)
+                    print("再见！（对话上下文已保存）")
+                    break
+                elif cmd == "r":
+                    bot.reset()
+                    clear_conversation()
+                    print("[对话已重置]")
+                    continue
+                elif cmd == "":
+                    await process_turn(recorder, stt, bot, tts, player)
+                    save_conversation([], bot.conversation)
+                else:
+                    print("按 Enter 说话，按 r 重置，按 q 退出")
+
+            except KeyboardInterrupt:
+                print("\n再见！")
                 break
-            elif cmd == "r":
-                bot.reset()
-                clear_conversation()
-                print("[对话已重置]")
+            except Exception as e:
+                print(f"\n[错误] {e}")
                 continue
-            elif cmd == "":
-                await process_turn(recorder, stt, bot, tts, player)
-                save_conversation([], bot.conversation)
-            else:
-                print("按 Enter 说话，按 r 重置，按 q 退出")
-
-        except KeyboardInterrupt:
-            print("\n再见！")
-            break
-        except Exception as e:
-            print(f"\n[错误] {e}")
-            continue
+    finally:
+        if wake is not None:
+            wake.close()
 
 
 if __name__ == "__main__":
