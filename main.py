@@ -19,6 +19,7 @@ from audio_utils import AudioRecorder, AudioPlayer, list_devices
 from stt import SpeechRecognizer
 from llm import ChatBot
 from tts import SpeechSynthesizer
+from speech_utils import sentence_stream
 
 
 async def process_turn(
@@ -28,7 +29,7 @@ async def process_turn(
     tts: SpeechSynthesizer,
     player: AudioPlayer,
 ):
-    """处理一轮对话：听 → 想 → 说。"""
+    """处理一轮对话：听 → 想 → 说（流式：按句生成、边生成边播报，支持语音打断）。"""
 
     # 1. 录音
     audio = recorder.record_until_silence(
@@ -50,30 +51,44 @@ async def process_turn(
 
     print(f"\r你: {user_text}")
 
-    # 3. LLM 思考
+    # 3. LLM 流式思考 + 按句合成播报（播报时监听麦克风，用户一开口立即停止）
     print("[LLM] 思考中...", end="", flush=True)
     t_start = time.time()
-    reply = await bot.chat(user_text)
+    parts: list[str] = []
+    interrupted = False
+    try:
+        async for sentence in sentence_stream(bot.chat_stream(user_text)):
+            parts.append(sentence)
+            if len(parts) == 1:
+                print(f"\rAI: {sentence}", end="", flush=True)
+            else:
+                print(sentence, end="", flush=True)
+
+            audio_path = await tts.synthesize(sentence)
+            try:
+                if player.play_file_with_barge_in(
+                    audio_path,
+                    threshold=Config.VAD_THRESHOLD,
+                    input_device=recorder.device,
+                ):
+                    interrupted = True
+                    break
+            finally:
+                try:
+                    os.unlink(audio_path)
+                except OSError:
+                    pass
+    except RuntimeError as e:
+        print(f"\n[错误] {e}")
+        return
     t_llm = time.time() - t_start
 
-    print(f"\rAI: {reply}")
-    print(f"      (STT: {t_stt:.1f}s | LLM: {t_llm:.1f}s)")
-
-    # 4. 语音合成
-    print("[TTS] 合成语音中...", end="", flush=True)
-    t_start = time.time()
-    audio_path = await tts.synthesize(reply)
-    t_tts = time.time() - t_start
-    print(f"\r[TTS] 合成完成 ({t_tts:.1f}s)")
-
-    # 5. 播放
-    player.play_file(audio_path)
-
-    # 清理临时文件
-    try:
-        os.unlink(audio_path)
-    except OSError:
-        pass
+    full_reply = "".join(parts)
+    if interrupted:
+        # 打断后手动补录助手回复，保持上下文完整
+        bot.conversation.append({"role": "assistant", "content": full_reply})
+        print("\n[打断] 检测到用户说话，已停止播报")
+    print(f"\n      (STT: {t_stt:.1f}s | LLM: {t_llm:.1f}s)")
 
 
 async def main():

@@ -123,3 +123,60 @@ class AudioPlayer:
                 pygame.time.Clock().tick(10)
         finally:
             pygame.mixer.quit()
+
+    def play_file_with_barge_in(
+        self,
+        filepath: str,
+        threshold: float = 0.02,
+        input_device=None,
+        sample_rate: int = None,
+    ) -> bool:
+        """播放音频并同时监听麦克风，检测到用户说话立即停止播放。
+
+        Args:
+            filepath: 音频文件路径
+            threshold: 语音电平阈值，超过即认为用户在说话
+            input_device: 麦克风设备编号（None 用系统默认）
+
+        Returns:
+            True 表示播放被用户说话打断，False 表示完整播放结束。
+        """
+        import pygame
+
+        if sample_rate is None:
+            sample_rate = Config.SAMPLE_RATE
+        pygame.mixer.init(frequency=sample_rate)
+        try:
+            pygame.mixer.music.load(filepath)
+            pygame.mixer.music.play()
+        except Exception:
+            pygame.mixer.quit()
+            return False
+
+        speech_streak = 0
+        interrupted = False
+        stream = sd.InputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="float32",
+            device=input_device,
+        )
+        stream.start()
+        try:
+            while pygame.mixer.music.get_busy():
+                chunk, _ = stream.read(int(sample_rate * 0.1))
+                level = float(np.abs(chunk).mean())
+                if level > threshold:
+                    speech_streak += 1
+                    if speech_streak >= 3:  # 连续 0.3 秒有语音才判定打断
+                        pygame.mixer.music.stop()
+                        interrupted = True
+                        break
+                else:
+                    speech_streak = 0
+                pygame.time.Clock().tick(10)
+        finally:
+            stream.stop()
+            stream.close()
+            pygame.mixer.quit()
+        return interrupted

@@ -8,6 +8,7 @@
     浏览器打开 http://127.0.0.1:7860
 """
 
+import asyncio
 import os
 import sys
 
@@ -24,6 +25,7 @@ from config import Config
 from stt import SpeechRecognizer
 from llm import ChatBot
 from tts import SpeechSynthesizer
+from speech_utils import sentence_stream, audio_duration_sec
 
 # ── 全局初始化 ──────────────────────────────────────────────
 
@@ -48,7 +50,7 @@ VOICE_NAMES = [v[1] for v in VOICE_CHOICES]
 # ── 核心处理 ────────────────────────────────────────────────
 
 async def process_voice(audio: tuple, history: list, voice: str):
-    """处理麦克风语音输入（流式：识别 → LLM 逐字生成 → TTS 朗读）。
+    """处理麦克风语音输入（识别 → LLM 流式生成 → 按句合成逐句播报）。
 
     Args:
         audio: Gradio Audio 组件返回的 (sample_rate, np.ndarray)
@@ -70,17 +72,32 @@ async def process_voice(audio: tuple, history: list, voice: str):
         yield history, f"⚠️ 未识别到有效文字 (STT: {t_stt:.1f}s)", None
         return
 
-    # 2. LLM 流式对话（逐字更新界面）
+    # 2. LLM 流式对话 + 按句合成播报
     history.append({"role": "user", "content": f"🎤 {user_text}"})
     history.append({"role": "assistant", "content": ""})
 
+    tts.VOICE = voice
     t0 = time.time()
     parts: list[str] = []
+    prev_end = time.time()  # 上一句音频预计播完的时刻（用于控制播报节奏）
     try:
-        async for chunk in bot.chat_stream(user_text):
-            parts.append(chunk)
+        async for sentence in sentence_stream(bot.chat_stream(user_text)):
+            parts.append(sentence)
             history[-1]["content"] = "🤖 " + "".join(parts)
             yield history, "⏳ 正在生成...", None
+
+            # 合成当前句（失败则跳过播报，文字已显示）
+            try:
+                audio_path = await tts.synthesize(sentence)
+            except Exception:
+                continue
+
+            # 等上一句播完再播这一句，避免浏览器里互相打断
+            now = time.time()
+            if now < prev_end:
+                await asyncio.sleep(prev_end - now)
+            yield history, "🔊 正在播报...", audio_path
+            prev_end = time.time() + audio_duration_sec(audio_path, len(sentence))
     except Exception as e:
         history[-1]["content"] = f"⚠️ LLM 调用失败：{e}"
         yield history, "⚠️ LLM 调用失败", None
@@ -92,41 +109,42 @@ async def process_voice(audio: tuple, history: list, voice: str):
         history[-1]["content"] = "🤖 （暂无回复）"
         yield history, "⚠️ 模型返回空回复", None
         return
-    history[-1]["content"] = "🤖 " + full_reply
 
-    # 3. 语音合成（整句完成后一次合成）
-    t0 = time.time()
-    tts.VOICE = voice  # 更新音色
-    audio_path = await tts.synthesize(full_reply)
-    t_tts = time.time() - t0
-
-    status = (
-        f"✅ STT: {t_stt:.1f}s | LLM: {t_llm:.1f}s | TTS: {t_tts:.1f}s | "
-        f"总计: {t_stt + t_llm + t_tts:.1f}s"
-    )
-
-    yield history, status, audio_path
+    status = f"✅ STT: {t_stt:.1f}s | LLM: {t_llm:.1f}s | 已完成播报"
+    yield history, status, None
 
 
 async def process_text(text: str, history: list, voice: str):
-    """处理文字输入（流式：LLM 逐字生成 → TTS 朗读）。"""
+    """处理文字输入（LLM 流式生成 → 按句合成逐句播报）。"""
     if not text or not text.strip():
         yield history, "⚠️ 请输入文字", None
         return
 
     user_text = text.strip()
 
-    # LLM 流式对话
     history.append({"role": "user", "content": f"⌨️ {user_text}"})
     history.append({"role": "assistant", "content": ""})
 
+    tts.VOICE = voice
     t0 = time.time()
     parts: list[str] = []
+    prev_end = time.time()
     try:
-        async for chunk in bot.chat_stream(user_text):
-            parts.append(chunk)
+        async for sentence in sentence_stream(bot.chat_stream(user_text)):
+            parts.append(sentence)
             history[-1]["content"] = "🤖 " + "".join(parts)
             yield history, "⏳ 正在生成...", None
+
+            try:
+                audio_path = await tts.synthesize(sentence)
+            except Exception:
+                continue
+
+            now = time.time()
+            if now < prev_end:
+                await asyncio.sleep(prev_end - now)
+            yield history, "🔊 正在播报...", audio_path
+            prev_end = time.time() + audio_duration_sec(audio_path, len(sentence))
     except Exception as e:
         history[-1]["content"] = f"⚠️ LLM 调用失败：{e}"
         yield history, "⚠️ LLM 调用失败", None
@@ -138,17 +156,9 @@ async def process_text(text: str, history: list, voice: str):
         history[-1]["content"] = "🤖 （暂无回复）"
         yield history, "⚠️ 模型返回空回复", None
         return
-    history[-1]["content"] = "🤖 " + full_reply
 
-    # 语音合成
-    t0 = time.time()
-    tts.VOICE = voice
-    audio_path = await tts.synthesize(full_reply)
-    t_tts = time.time() - t0
-
-    status = f"✅ LLM: {t_llm:.1f}s | TTS: {t_tts:.1f}s | 总计: {t_llm + t_tts:.1f}s"
-
-    yield history, status, audio_path
+    status = f"✅ LLM: {t_llm:.1f}s | 已完成播报"
+    yield history, status, None
 
 
 def reset_conversation():
@@ -212,6 +222,7 @@ with gr.Blocks() as demo:
                     info="选择 AI 朗读的音色",
                 )
                 reset_btn = gr.Button("🔄 重置对话", variant="stop", size="sm")
+                stop_btn = gr.Button("⏹ 停止播报", variant="stop", size="sm")
 
         # ── 右侧：输出区 ──
         with gr.Column(scale=1):
@@ -257,6 +268,12 @@ with gr.Blocks() as demo:
         fn=reset_conversation,
         inputs=[],
         outputs=[chatbot, status, audio_output],
+    )
+
+    # 停止播报：暂停浏览器中所有 audio 元素（纯前端 JS）
+    stop_btn.click(
+        None,
+        js="() => { document.querySelectorAll('audio').forEach(a => { a.pause(); a.currentTime = 0; }); }",
     )
 
     # 同步 chat_state 与 chatbot
