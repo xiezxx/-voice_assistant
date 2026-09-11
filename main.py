@@ -150,7 +150,9 @@ async def main():
     wake = None
     if Config.WAKE_WORD_ENABLED:
         wake, mode = create_wake_listener(stt)
-        if mode == "porcupine":
+        if mode == "sherpa":
+            print("[唤醒词] sherpa-onnx 本地模型已开启（毫秒级响应）")
+        elif mode == "porcupine":
             print("[唤醒词] Porcupine 模式已开启")
         else:
             print("[唤醒词] ASR 模式已开启（说「小音」唤醒，响应约1秒）")

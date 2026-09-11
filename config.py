@@ -19,8 +19,17 @@ class Config:
     VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.02"))
     SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "1.0"))
 
-    # 唤醒词（Picovoice Porcupine，唤醒词「小音，小音」）
+    # 唤醒词「小音」：sherpa-onnx KWS 方案（默认，本地模型）
     WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "1") == "1"
+    KWS_MODEL_DIR = os.getenv(
+        "KWS_MODEL_DIR", str(Path(PROJECT_ROOT) / "models" / "kws-wenetspeech")
+    )
+    WAKE_KEYWORDS_FILE = os.getenv(
+        "WAKE_KEYWORDS_FILE", str(Path(PROJECT_ROOT) / "models" / "wake_keywords.txt")
+    )
+    KWS_KEYWORDS_SCORE = float(os.getenv("KWS_KEYWORDS_SCORE", "1.0"))
+    KWS_KEYWORDS_THRESHOLD = float(os.getenv("KWS_KEYWORDS_THRESHOLD", "0.25"))
+    # 可选 Picovoice 低延迟方案（需 AccessKey + .ppn 模型）
     PICOVOICE_ACCESS_KEY = os.getenv("PICOVOICE_ACCESS_KEY", "")
     WAKE_WORD_MODEL_PATH = os.getenv(
         "WAKE_WORD_MODEL_PATH",
