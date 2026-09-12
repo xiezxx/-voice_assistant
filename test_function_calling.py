@@ -3,8 +3,23 @@
 
 import asyncio
 import re
+from datetime import datetime, timedelta
 
-from tools import calculate, get_time, get_weather, get_exchange_rate, TOOL_SCHEMAS
+from tools import (
+    calculate,
+    get_time,
+    get_weather,
+    get_exchange_rate,
+    get_air_quality,
+    get_news,
+    add_reminder,
+    list_reminders,
+    delete_reminder,
+    get_due_reminders_text,
+    get_express_tracking,
+    _normalize_company,
+    TOOL_SCHEMAS,
+)
 
 
 def test_calculate():
@@ -28,7 +43,11 @@ def test_get_time():
 
 def test_schemas():
     names = [s["function"]["name"] for s in TOOL_SCHEMAS]
-    assert names == ["get_weather", "get_time", "calculate", "get_exchange_rate"], names
+    assert names == [
+        "get_weather", "get_time", "calculate", "get_exchange_rate",
+        "get_air_quality", "get_news", "add_reminder", "list_reminders",
+        "delete_reminder", "get_express_tracking",
+    ], names
     print("✓ 工具定义:", names)
 
 
@@ -51,6 +70,83 @@ async def test_exchange_rate():
     r3 = await get_exchange_rate("US", "CNY")
     assert "格式不对" in r3, r3
     print("✓ 非法代码兜底:", r3)
+
+
+async def test_air_quality():
+    r = await get_air_quality("徐州")
+    assert "徐州" in r and "空气质量" in r and "PM2.5" in r, r
+    print("✓ 空气质量工具:", r)
+    r2 = await get_air_quality("不存在城市xyz")
+    assert r2.startswith("没有查到"), r2
+    print("✓ 未知城市兜底:", r2)
+
+
+async def test_news():
+    r = await get_news()
+    assert "要闻" in r and "1." in r, r
+    print("✓ 新闻工具:", r[:60] + "…")
+
+
+def test_reminders():
+    """日程提醒：添加/查询/取消/到点提醒注入（用临时文件，不碰真实数据）。"""
+    import tempfile
+    import tools
+
+    tmp = tempfile.mkdtemp()
+    tools._REMINDERS_FILE = tools._REMINDERS_FILE.__class__(tmp) / "reminders.json"
+    try:
+        # 添加：过去时间/坏格式/正常
+        past = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M")
+        assert "已过去" in add_reminder(past, "过期事项"), add_reminder(past, "过期事项")
+        assert "看不懂" in add_reminder("明天下午3点", "开会"), add_reminder("明天下午3点", "开会")
+        future = (datetime.now() + timedelta(days=1, hours=1)).strftime("%Y-%m-%d %H:%M")
+        r = add_reminder(future, "开会")
+        assert r.startswith("已设置提醒"), r
+        assert "已存在" in add_reminder(future, "开会"), "重复添加应被拦截"
+        # 查询与取消
+        r = list_reminders()
+        assert "开会" in r and "1." in r, r
+        r = delete_reminder(1)
+        assert r.startswith("已取消提醒") and "开会" in r, r
+        assert delete_reminder(5).startswith("没有第"), "越界序号应兜底"
+        assert "你目前没有待办提醒" in list_reminders(), list_reminders()
+        # 到点提醒：直接写入一条已到点未通知的，验证注入与一次性标记
+        tools._save_reminders([
+            {"time": past, "content": "测试提醒", "notified": False},
+        ])
+        text = get_due_reminders_text()
+        assert "测试提醒" in text, text
+        assert get_due_reminders_text() == "", "已通知的提醒不应重复注入"
+        print("✓ 日程提醒（添加/查询/取消/到点注入/防重复）")
+    finally:
+        tools._save_reminders([])
+        try:
+            (tools._REMINDERS_FILE).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def test_express_tracking():
+    """快递：未配置 Key 时优雅降级 + 公司名映射。"""
+    assert _normalize_company("顺丰") == "SF"
+    assert _normalize_company("圆通速递") == "YTO"
+    assert _normalize_company("京东物流") == "JD"
+    assert _normalize_company("火星快递") is None
+    assert _normalize_company("") is None
+    from config import Config
+
+    async def run():
+        r = await get_express_tracking("", "")
+        assert "单号" in r, r
+        r = await get_express_tracking("火星快递", "SF123")
+        assert "不认识" in r, r
+        r = await get_express_tracking("顺丰", "SF1234567890")
+        if not Config.KDNIAO_EBUSINESS_ID or not Config.KDNIAO_APP_KEY:
+            assert "还没配置" in r, r
+        else:
+            assert r, "配置了 Key 时应返回查询结果"
+    asyncio.run(run())
+    print("✓ 快递工具（公司名映射 + 未配置降级）")
 
 
 async def test_deepseek_integration():
@@ -80,5 +176,9 @@ if __name__ == "__main__":
     test_schemas()
     asyncio.run(test_weather())
     asyncio.run(test_exchange_rate())
+    asyncio.run(test_air_quality())
+    asyncio.run(test_news())
+    test_reminders()
+    test_express_tracking()
     asyncio.run(test_deepseek_integration())
     print("\n全部通过 ✅")

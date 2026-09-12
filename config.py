@@ -40,10 +40,16 @@ class Config:
     SAMPLE_RATE = 16000
     CHANNELS = 1
 
+    # 快递查询（快递鸟免费接口，可选）：https://www.kdniao.com 注册后申请即时查询API
+    KDNIAO_EBUSINESS_ID = os.getenv("KDNIAO_EBUSINESS_ID", "")
+    KDNIAO_APP_KEY = os.getenv("KDNIAO_APP_KEY", "")
+
     SYSTEM_PROMPT = (
         "你是一个友好的 AI 语音助手，名叫小音。"
         "请用简洁、口语化的中文回复，每次回复控制在2-3句话以内。"
         "语气要自然，像朋友聊天一样。"
+        "你可以帮用户查天气、空气质量、时间、汇率、新闻，做计算，"
+        "设置/查询/取消日程提醒，以及查快递物流。"
     )
 
     @classmethod

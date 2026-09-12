@@ -2,7 +2,7 @@
 
 from openai import AsyncOpenAI
 from config import Config
-from tools import TOOL_SCHEMAS, TOOL_DISPLAY, execute_tool
+from tools import TOOL_SCHEMAS, TOOL_DISPLAY, execute_tool, get_due_reminders_text
 
 
 class ChatBot:
@@ -26,13 +26,14 @@ class ChatBot:
             return "我没有听清你说的话，可以再说一遍吗？"
 
         self.conversation.append({"role": "user", "content": user_text})
+        system = self._system_content()
 
         try:
             response = await self.client.chat.completions.create(
                 model="deepseek-chat",
                 max_tokens=512,
                 messages=[
-                    {"role": "system", "content": Config.SYSTEM_PROMPT},
+                    {"role": "system", "content": system},
                     *self._build_messages(),
                 ],
             )
@@ -64,6 +65,7 @@ class ChatBot:
         """
         self.conversation.append({"role": "user", "content": user_text})
         self.status = ""
+        system = self._system_content()
 
         full_reply = ""
         try:
@@ -72,7 +74,7 @@ class ChatBot:
                 model="deepseek-chat",
                 max_tokens=512,
                 messages=[
-                    {"role": "system", "content": Config.SYSTEM_PROMPT},
+                    {"role": "system", "content": system},
                     *self._build_messages(),
                 ],
                 tools=TOOL_SCHEMAS,
@@ -131,7 +133,7 @@ class ChatBot:
                 model="deepseek-chat",
                 max_tokens=512,
                 messages=[
-                    {"role": "system", "content": Config.SYSTEM_PROMPT},
+                    {"role": "system", "content": system},
                     *self._build_messages(),
                 ],
             )
@@ -148,6 +150,14 @@ class ChatBot:
             if self.conversation and self.conversation[-1]["role"] == "user":
                 self.conversation.pop()
             raise RuntimeError(f"DeepSeek API 调用失败: {e}") from e
+
+    def _system_content(self) -> str:
+        """系统提示词 + 到点日程提醒（若有；一次性标记，避免每轮重复提醒）。"""
+        try:
+            reminder = get_due_reminders_text()
+        except Exception:
+            reminder = ""
+        return Config.SYSTEM_PROMPT + (("\n\n" + reminder) if reminder else "")
 
     def _build_messages(self) -> list[dict]:
         """构建 API 消息列表：过滤无效消息，剔除工具结果缺失的残缺调用。"""
