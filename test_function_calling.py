@@ -68,8 +68,8 @@ async def test_deepseek_integration():
     reply = "".join(parts)
     assert reply, "回复为空"
     print("✓ DeepSeek 集成（工具调用）回复:", reply)
-    # 回复里应包含数字时间；上下文应包含工具调用记录
-    assert re.search(r"\d{1,2}:\d{2}|\d{1,2}点", reply), f"回复中未发现时间: {reply}"
+    # 回复里应包含数字/中文数字时间（如 "17:30"、"5点"、"五点半"）；上下文应包含工具调用记录
+    assert re.search(r"\d{1,2}:\d{2}|\d{1,2}点|[零一二三四五六七八九十]{1,3}点", reply), f"回复中未发现时间: {reply}"
     print("✓ 上下文中存在工具消息:", any(m["role"] == "tool" for m in bot.conversation))
     bot.reset()
 

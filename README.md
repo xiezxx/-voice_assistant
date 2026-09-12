@@ -13,7 +13,7 @@
 - **语音打断**：CLI 模式播放时持续监听麦克风，用户一开口立即停止播报进入下一轮；Web 界面提供"停止播报"按钮
 - **Function Calling**：小音会自己调用工具——查天气（Open-Meteo 实时数据）、报时间日期、算数（AST 白名单安全计算）、汇率换算
 - **对话记忆**：对话自动保存到本地，重启/刷新后恢复上下文，随时可"重置对话"清空
-- **免提唤醒**：CLI 模式喊「小音」即可唤醒开始对话（sherpa-onnx 本地关键词检测，毫秒级）
+- **免提唤醒**：CLI 模式喊「小音」即可唤醒开始对话（sherpa-onnx 本地关键词检测，毫秒级）；Web 界面点一次「免提唤醒开关」后同样支持（麦克风音频流经 WebSocket 回传服务器检测）
 
 ## 快速开始
 
@@ -57,7 +57,24 @@ CLI 模式下，AI 播报时**直接开口说话**即可打断，无需按键。
 
 ## 免提唤醒
 
+### CLI 模式
+
 CLI 模式启动后进入**待机状态**，喊「**小音**」即唤醒开始对话，对话结束自动回到待机，无需按键。
+
+### Web 界面
+
+打开页面后点击「🎙️ 免提唤醒开关」并**允许浏览器使用麦克风**（一次性授权，浏览器安全要求），之后页面持续监听：
+
+- 说「**小音**」→ 提示音 → 直接说出问题，停顿约 1 秒自动结束录音
+- 回复逐句显示在对话区并自动播报，播报完自动回到聆听
+- AI 播报时说「小音」可**打断**并开始新一轮对话
+- 再次点击开关或刷新页面即关闭（刷新后需重新点击授权）
+
+实现原理：浏览器麦克风音频经 **WebSocket**（`/ws/wake`）流回服务器，用与 CLI 相同的 sherpa-onnx 本地 KWS 模型毫秒级检测（需要 `websockets>=12.0` 依赖）。唤醒后的录音经 `/api/wake_audio` 走完整对话管线。
+
+## 本地 KWS 模型
+
+CLI 与 Web 唤醒共用同一套模型：
 
 默认使用 **sherpa-onnx 中文关键词检测**（3.3M 本地模型，毫秒级响应，无需账号、无需联网）：
 - 模型文件在 `models/kws-wenetspeech/`（已随仓库提供）
@@ -90,13 +107,20 @@ CLI 模式启动后进入**待机状态**，喊「**小音**」即唤醒开始�
 
 ```
 voice_assistant/
-├── app.py              # Gradio Web 前端入口
-├── main.py             # CLI 交互入口
+├── app.py              # Gradio Web 前端入口（含免提唤醒 UI 与 Timer 播报）
+├── main.py             # CLI 交互入口（含免提唤醒）
 ├── config.py           # 配置管理
 ├── stt.py              # 语音识别（Faster-Whisper）
 ├── llm.py              # 大语言模型（DeepSeek API）
 ├── tts.py              # 语音合成（Edge-TTS）
-├── audio_utils.py      # 音频工具（录音/播放）
+├── tools.py            # Function Calling 工具（天气/时间/计算器/汇率）
+├── audio_utils.py      # 音频工具（录音/播放/打断）
+├── wakeword.py         # 唤醒词检测（sherpa-onnx KWS / ASR 兜底）
+├── wake_server.py      # Web 免提唤醒服务端（WS 音频流 + WAV 上传接口）
+├── web/wake_mode.js    # 浏览器端免提唤醒脚本（采音/VAD/上传）
+├── speech_utils.py     # 句子切分等语音工具
+├── conversation_store.py  # 对话持久化
+├── models/             # KWS 模型与唤醒词文件（已随仓库提供）
 ├── requirements.txt    # Python 依赖
 ├── .env                # API Key 配置（需自行填写）
 ├── .env.example        # 配置模板

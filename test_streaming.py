@@ -105,7 +105,7 @@ def test_chat_stream_early_break():
 
 
 def test_process_text_streaming():
-    """Gradio 处理函数：假 bot + 假 tts，验证逐句播报流程。"""
+    """Gradio 处理函数：假 bot + 假 tts，验证逐句播报流程（服务端历史单一事实源）。"""
     import time
     import app  # 会加载 Whisper 模型（已缓存）
 
@@ -126,20 +126,22 @@ def test_process_text_streaming():
 
     app.bot = FakeBot()
     app.tts = FakeTTS()
+    app.SERVER_HISTORY.clear()
 
     async def run():
         yields = []
-        history = []
         t0 = time.time()
-        async for h, status, audio in app.process_text("你好", history, "zh-CN-XiaoyiNeural"):
+        async for h, status, audio in app.process_text("你好"):
             yields.append((status, audio))
         elapsed = time.time() - t0
-        return yields, history, elapsed
+        return yields, elapsed
 
-    yields, history, elapsed = asyncio.run(run())
+    yields, elapsed = asyncio.run(run())
     audio_yields = [y for y in yields if y[1]]
     assert len(audio_yields) == 2, f"应播报 2 句，实际 {len(audio_yields)}"
+    history = app.SERVER_HISTORY
     assert history[-1]["content"] == "🤖 你好，我是小音。今天天气不错！", history[-1]
+    assert history[0] == {"role": "user", "content": "⌨️ 你好"}, history[0]
     assert yields[-1][0].startswith("✅"), yields[-1]
     print(f"✓ Web 流式播报: {len(audio_yields)} 句音频, 总耗时 {elapsed:.1f}s")
     for s, a in yields:

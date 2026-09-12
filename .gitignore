@@ -7,3 +7,4 @@ temp/
 .venv/
 .idea/
 data/
+*.log

@@ -25,18 +25,15 @@ def test_sherpa_pipeline():
     if not ok:
         print(f"⚠ 跳过 sherpa 测试（{reason}）")
         return
-    from wakeword import SherpaKwsWakeWordListener
+    from wakeword import KwsFeedDetector
 
-    listener = SherpaKwsWakeWordListener()
-    stream = listener._spotter.create_stream()
+    detector = KwsFeedDetector()
+    stream = detector.create_stream()
     # 喂 2 秒静音，不应检测到关键词
     silence = np.zeros(16000 * 2, dtype=np.float32)
-    stream.accept_waveform(16000, silence)
-    while listener._spotter.is_ready(stream):
-        listener._spotter.decode_stream(stream)
-    result = listener._spotter.get_result(stream)
+    result = detector.feed(stream, silence)
     assert not result, f"静音不应触发: {result}"
-    print("✓ sherpa 模型加载成功，静音不误报")
+    print("✓ sherpa 模型加载成功，静音不误报（KwsFeedDetector.feed）")
 
 
 def test_sherpa_e2e():
@@ -61,28 +58,22 @@ def test_sherpa_e2e():
     audio = raw.astype(np.float32).mean(axis=1) / 32768.0
     audio = resample(audio, int(len(audio) * 16000 / sr_raw))
 
-    from wakeword import SherpaKwsWakeWordListener
+    from wakeword import KwsFeedDetector
 
-    listener = SherpaKwsWakeWordListener()
-    stream = listener._spotter.create_stream()
+    detector = KwsFeedDetector()
+    stream = detector.create_stream()
     found = ""
     chunk = 1600
     for i in range(0, len(audio), chunk):
         part = audio[i:i + chunk].astype(np.float32)
         if len(part) < chunk:
             part = np.pad(part, (0, chunk - len(part)))
-        stream.accept_waveform(16000, part)
-        while listener._spotter.is_ready(stream):
-            listener._spotter.decode_stream(stream)
-        r = listener._spotter.get_result(stream)
+        r = detector.feed(stream, part)
         if r:
             found = r
             break
     if not found:
-        stream.accept_waveform(16000, np.zeros(8000, dtype=np.float32))
-        while listener._spotter.is_ready(stream):
-            listener._spotter.decode_stream(stream)
-        found = listener._spotter.get_result(stream)
+        found = detector.feed(stream, np.zeros(8000, dtype=np.float32))
     assert found, "合成语音未触发唤醒词"
     print(f"✓ 端到端唤醒检测: TTS「小音小音」→ 检测到 {found}")
 
@@ -90,9 +81,13 @@ def test_sherpa_e2e():
 def test_listener_selection():
     ok, reason = sherpa_available()
     if ok:
+        # CLI 监听器（麦克风版）仍可构造——重构后的回归面
+        from wakeword import SherpaKwsWakeWordListener
+        cli_listener = SherpaKwsWakeWordListener()
+        assert cli_listener._detector is not None
         listener, mode = create_wake_listener(None)
         assert mode == "sherpa", mode
-        print("✓ 优先选择 sherpa-onnx 本地方案")
+        print("✓ 优先选择 sherpa-onnx 本地方案（CLI 监听器构造正常）")
         return
     ok, reason = picovoice_available()
     if ok:

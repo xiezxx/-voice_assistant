@@ -31,14 +31,24 @@ def is_wake_phrase(text: str) -> bool:
     return any(p in cleaned for p in _WAKE_PHRASES)
 
 
-class SherpaKwsWakeWordListener:
-    """基于 sherpa-onnx 的本地中文关键词检测（毫秒级，无需账号）。"""
+class KwsFeedDetector:
+    """麦克风无关的 sherpa-onnx 关键词检测器：喂入 16k float32 样本，返回关键词。
 
-    def __init__(self):
+    线程安全：KeywordSpotter 实例为共享资源，decode 调用不可并发——调用方负责串行化
+    （CLI 单线程天然安全；Web 端 WS 循环用全局 asyncio.Lock）。
+    每个客户端/会话用 create_stream() 创建独立流。
+    """
+
+    def __init__(self, spotter=None):
+        self._spotter = spotter if spotter is not None else self._create_spotter()
+        self.sample_rate = 16000
+
+    @staticmethod
+    def _create_spotter():
         import sherpa_onnx
 
         model_dir = Path(Config.KWS_MODEL_DIR)
-        self._spotter = sherpa_onnx.KeywordSpotter(
+        return sherpa_onnx.KeywordSpotter(
             tokens=str(model_dir / "tokens.txt"),
             encoder=str(model_dir / "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"),
             decoder=str(model_dir / "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"),
@@ -49,6 +59,24 @@ class SherpaKwsWakeWordListener:
             keywords_score=Config.KWS_KEYWORDS_SCORE,
             keywords_threshold=Config.KWS_KEYWORDS_THRESHOLD,
         )
+
+    def create_stream(self):
+        return self._spotter.create_stream()
+
+    def feed(self, stream, samples: np.ndarray) -> str:
+        """喂入 16k float32 样本（任意长度，建议 1600/0.1 秒），返回检测到的关键词或空串。"""
+        stream.accept_waveform(self.sample_rate, samples.astype(np.float32))
+        while self._spotter.is_ready(stream):
+            self._spotter.decode_stream(stream)
+        return self._spotter.get_result(stream)
+
+
+class SherpaKwsWakeWordListener:
+    """基于 sherpa-onnx 的本地中文关键词检测（毫秒级，无需账号）。"""
+
+    def __init__(self):
+        self._detector = KwsFeedDetector()
+        self._spotter = self._detector._spotter  # 兼容旧测试的直接访问
         self.sample_rate = 16000
         self._stream = None
 
@@ -67,17 +95,14 @@ class SherpaKwsWakeWordListener:
     def wait_for_wake_word(self, timeout: float = None) -> bool:
         """阻塞监听唤醒词；timeout 秒内未检测到返回 False。"""
         self._ensure_stream()
-        stream = self._spotter.create_stream()
+        stream = self._detector.create_stream()
         deadline = None if timeout is None else time.time() + timeout
         while True:
             if deadline is not None and time.time() >= deadline:
                 return False
             chunk, _ = self._stream.read(int(self.sample_rate * 0.1))
             samples = chunk.flatten().astype(np.float32)
-            stream.accept_waveform(self.sample_rate, samples)
-            while self._spotter.is_ready(stream):
-                self._spotter.decode_stream(stream)
-            keyword = self._spotter.get_result(stream)
+            keyword = self._detector.feed(stream, samples)
             if keyword:
                 print(f"[唤醒词] 检测到: {keyword}", flush=True)
                 return True
