@@ -7,8 +7,10 @@
     python app.py
     浏览器打开 http://127.0.0.1:7860
 
-免提唤醒：点击「🎙️ 免提唤醒开关」授权麦克风后持续监听，说「小音」即唤醒；
-浏览器麦克风音频经 WebSocket 流回服务器，用 sherpa-onnx KWS 本地模型毫秒级检测。
+免提唤醒：点击「🎙️ 免提唤醒开关」授权麦克风后持续监听，说「小音」即唤醒。
+浏览器与任何 WS 客户端（如 client.py、桌面宠物）通过 /ws/assistant 全双工会话协议
+接入：音频流式上行（sherpa-onnx KWS 本地模型毫秒级检测 + 服务器端 VAD/打断检测），
+回复以文本+mp3 字节流式下行。
 """
 
 import asyncio
@@ -35,8 +37,8 @@ from tts import SpeechSynthesizer
 from speech_utils import sentence_stream, audio_duration_sec
 from conversation_store import save_conversation, load_conversation, clear_conversation
 from wakeword import KwsFeedDetector, sherpa_available
-from wake_server import (
-    WakeDeps,
+from voice_server import (
+    VoiceDeps,
     register_routes,
     pop_latest_turn,
     should_advance,
@@ -220,7 +222,7 @@ async def process_text(text: str):
 async def wake_tick():
     """gr.Timer 轮询：消费免提唤醒队列 → 更新聊天/状态/逐句音频。
 
-    免提轮次在自定义 HTTP 路由里处理（非 Gradio 事件上下文），Timer 是把它
+    WS 会话轮次在 voice_server.py 里处理（非 Gradio 事件上下文），Timer 是把它
     同步进 UI 的唯一正规途径。空队列时全部 gr.skip()，避免 0.5 秒一次的重绘。
     """
     global PLAYBACK_PAUSED
@@ -238,6 +240,10 @@ async def wake_tick():
         PLAYBACK.done = False
         PLAYBACK_PAUSED = False
         chatbot_out = PLAYBACK.last_history
+        if not PLAYBACK.turn:  # WS 轮次：无服务端 mp3（客户端自行播放），只更新聊天/状态
+            PLAYBACK.turn = None
+            PLAYBACK.done = True
+            return chatbot_out, PLAYBACK.final_status, gr.skip()
     else:
         chatbot_out = gr.skip()
 
@@ -425,10 +431,11 @@ with gr.Blocks() as demo:
         outputs=[chatbot, status, audio_output],
     )
 
-    # 停止播报：暂停浏览器中所有 audio 元素（纯前端 JS）+ 暂停免提逐句播报
+    # 停止播报：暂停浏览器中所有 audio 元素（纯前端 JS）+ 通知全双工会话停止 + 暂停免提逐句播报
     stop_btn.click(
         fn=_pause_playback,
-        js="() => { document.querySelectorAll('audio').forEach(a => { a.pause(); a.currentTime = 0; }); }",
+        js="() => { document.querySelectorAll('audio').forEach(a => { a.pause(); a.currentTime = 0; });"
+        " if (window.wakeStop) window.wakeStop(); }",
         outputs=[status],
     )
 
@@ -455,7 +462,7 @@ with gr.Blocks() as demo:
 # ── 自定义路由注册（必须在 launch 之前） ───────────────────────
 
 _kws_detector = KwsFeedDetector() if _kws_ok else None
-_wake_deps = WakeDeps(
+_voice_deps = VoiceDeps(
     kws=_kws_detector,
     stt=stt,
     bot=bot,
@@ -467,7 +474,7 @@ _wake_deps = WakeDeps(
     kws_lock=KWS_LOCK,
     queue=WAKE_QUEUE,
 )
-register_routes(demo.app, _wake_deps)
+register_routes(demo.app, _voice_deps)
 
 # 注意：不能用 /static 前缀——gradio 自带 /static/{path:path} 捕获路由会先截走请求
 demo.app.mount(

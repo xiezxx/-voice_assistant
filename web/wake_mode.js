@@ -1,9 +1,11 @@
-/* Web 免提唤醒 —— 浏览器端麦克风采集 + WebSocket 音频流 + 能量门 VAD 录音。
+/* Web 全双工语音会话 —— 浏览器端麦克风持续推流 + 流式播放服务器下发的 mp3。
  *
- * 状态机：IDLE → LISTENING → RECORDING → UPLOADING → LISTENING
- *  - LISTENING：音频帧发往 /ws/wake，服务器 sherpa-onnx KWS 检测「小音」
- *  - RECORDING：收到唤醒消息后录下问题，VAD 参数与 audio_utils.py 对齐
- *  - UPLOADING：WAV 上传 /api/wake_audio，服务器跑完整管线（期间不监听）
+ * 协议 /ws/assistant（详见 README「接入协议」）：
+ *  - 上行：二进制 int16 16k PCM 帧（持续推流，含 AI 播报期间——服务器检测说话打断）；
+ *          控制 {"type":"stop"}。
+ *  - 下行：JSON 事件 wake/transcript/sentence/status/barge_in/turn_end/error；
+ *          audio 事件后紧跟一个二进制帧 = 完整 mp3。
+ * 客户端无状态机：全部由服务器按会话状态路由；UI 聊天框由 Gradio Timer 机制同步。
  *
  * 依赖 DOM：#wake-btn（开关按钮）、#wake-status（状态文字）。
  * 注：ScriptProcessorNode 已标记废弃但全浏览器支持、代码量小；未来可换 AudioWorklet。
@@ -11,20 +13,17 @@
 (function () {
   'use strict';
 
-  var CHUNK = 1600;        // 每帧样本数（0.1s @ 16k）
-  var THR = 0.02;          // VAD 能量阈值（对齐 audio_utils.py 的 mean-abs）
-  var SIL_FRAMES = 10;     // 1.0s 静音判定
-  var MAX_SEC = 12;        // 最长录音
-  var MIN_SEC = 0.3;       // 最短有效录音
+  var CHUNK = 1600;  // 每帧样本数（0.1s @ 16k）
 
-  var state = 'IDLE';      // IDLE | LISTENING | RECORDING | UPLOADING
+  var state = 'IDLE';  // IDLE | LISTENING（仅影响按钮/状态文案）
   var ws = null;
   var wsRetry = 0;
   var audioCtx = null;
   var micStream = null;
   var processor = null;
-  var ring = [];           // 浮点采样缓冲，凑满 CHUNK 发一帧
-  var rec = [], frames = 0, hasSpeech = false, silence = 0;
+  var ring = [];       // 浮点采样缓冲，凑满 CHUNK 发一帧
+  var playQueue = [];  // 待播放的 Audio 元素队列
+  var currentAudio = null;
 
   var statusEl = document.getElementById('wake-status');
 
@@ -51,22 +50,19 @@
 
   function connectWS() {
     var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    ws = new WebSocket(proto + location.host + '/ws/wake');
+    ws = new WebSocket(proto + location.host + '/ws/assistant');
     ws.binaryType = 'arraybuffer';
     ws.onopen = function () {
       wsRetry = 0;
       if (state === 'LISTENING') setStatus('🟢 免提聆听中 — 说「小音」唤醒');
     };
     ws.onmessage = function (ev) {
-      var m;
-      try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'wake' && state === 'LISTENING') {
-        beep([1320, 1760], 0.18);
-        setStatus('🔔 唤醒成功 — 请说话，说完停顿约 1 秒');
-        rec = []; frames = 0; hasSpeech = false; silence = 0;
-        state = 'RECORDING';
-      } else if (m.type === 'error') {
-        setStatus('⚠️ 唤醒服务不可用：' + (m.error || '') + '，请用麦克风按钮');
+      if (typeof ev.data === 'string') {
+        var m;
+        try { m = JSON.parse(ev.data); } catch (e) { return; }
+        handleEvent(m);
+      } else {
+        enqueueMp3(ev.data);  // audio 事件后的二进制帧 = 完整 mp3
       }
     };
     ws.onclose = function () {
@@ -79,11 +75,80 @@
     };
   }
 
+  function handleEvent(m) {
+    switch (m.type) {
+      case 'ready':
+        setStatus('🟢 免提聆听中 — 说「小音」唤醒');
+        break;
+      case 'wake':
+        beep([1320, 1760], 0.18);
+        setStatus('🔔 唤醒成功 — 请说话，说完停顿约 1 秒');
+        break;
+      case 'transcript':
+        if (m.text) setStatus('🤔 识别中：「' + m.text + '」');
+        break;
+      case 'sentence':
+        setStatus('🤖 ' + m.text);
+        break;
+      case 'status':
+        setStatus(m.text || '');
+        break;
+      case 'barge_in':
+        stopPlayback();
+        setStatus('⏹ 已打断 — 请继续说');
+        break;
+      case 'turn_end':
+        setStatus(m.status || '✅ 完成 — 说「小音」继续');
+        break;
+      case 'error':
+        setStatus('⚠️ ' + (m.error || '出错了'));
+        break;
+    }
+  }
+
+  function stopPlayback() {
+    playQueue.forEach(function (a) {
+      try { a.pause(); URL.revokeObjectURL(a.src); a.remove(); } catch (e) {}
+    });
+    playQueue = [];
+    if (currentAudio) {
+      try {
+        currentAudio.pause();
+        currentAudio.onended = null;
+        URL.revokeObjectURL(currentAudio.src);
+        currentAudio.remove();
+      } catch (e) {}
+      currentAudio = null;
+    }
+  }
+
+  function enqueueMp3(buf) {
+    var a = new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/mp3' })));
+    document.body.appendChild(a);  // 让「停止播报」按钮的 querySelectorAll('audio') 能暂停它
+    playQueue.push(a);
+    if (!currentAudio) playNext();
+  }
+
+  function playNext() {
+    if (!playQueue.length) { currentAudio = null; return; }
+    currentAudio = playQueue.shift();
+    currentAudio.onended = function () {
+      try { URL.revokeObjectURL(currentAudio.src); currentAudio.remove(); } catch (e) {}
+      playNext();
+    };
+    var p = currentAudio.play();
+    if (p && p.catch) {
+      p.catch(function () {
+        setStatus('🔊 浏览器阻止自动播放，请点击页面任意处');
+      });
+    }
+  }
+
   function toInt16(f32) {
     var i16 = new Int16Array(f32.length);
     for (var i = 0; i < f32.length; i++) {
       var s = Math.max(-1, Math.min(1, f32[i]));
-      var v = Math.round(s * 32768);   // 与服务器解码（/32768）对齐
+      var v = Math.round(s * 32768);
       i16[i] = Math.max(-32768, Math.min(32767, v));
     }
     return i16;
@@ -94,92 +159,14 @@
     ws.send(toInt16(f32).buffer);
   }
 
-  function onChunk(f32) {
-    if (state === 'LISTENING') sendToWs(f32);
-    else if (state === 'RECORDING') recordFrame(f32);
-  }
-
-  function recordFrame(f32) {
-    rec.push.apply(rec, f32);
-    frames++;
-    var sum = 0;
-    for (var i = 0; i < f32.length; i++) sum += Math.abs(f32[i]);
-    var level = sum / f32.length;
-    if (!hasSpeech) {
-      if (level >= THR) hasSpeech = true;
-      return;
-    }
-    if (level < THR) {
-      silence++;
-      if (silence >= SIL_FRAMES && frames > MIN_SEC * 10) { finish(); return; }
-    } else {
-      silence = 0;
-    }
-    if (frames >= MAX_SEC * 10) finish();
-  }
-
-  function encodeWav(f32) {
-    var n = f32.length;
-    var buf = new ArrayBuffer(44 + n * 2);
-    var v = new DataView(buf);
-    var writeStr = function (off, s) {
-      for (var i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i));
-    };
-    writeStr(0, 'RIFF');
-    v.setUint32(4, 36 + n * 2, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
-    v.setUint32(16, 16, true);            // fmt 块长度
-    v.setUint16(20, 1, true);             // PCM
-    v.setUint16(22, 1, true);             // 单声道
-    v.setUint32(24, 16000, true);         // 采样率
-    v.setUint32(28, 32000, true);         // 字节率
-    v.setUint16(32, 2, true);             // 块对齐
-    v.setUint16(34, 16, true);            // 位深
-    writeStr(36, 'data');
-    v.setUint32(40, n * 2, true);
-    var i16 = toInt16(f32);
-    for (var i = 0; i < n; i++) {
-      v.setInt16(44 + i * 2, i16[i], true);
-    }
-    return buf;
-  }
-
-  async function finish() {
-    if (frames < MIN_SEC * 10) {
-      setStatus('🟢 免提聆听中（未检测到有效语音，请再说一次）');
-      state = 'LISTENING';
-      rec = []; frames = 0; hasSpeech = false; silence = 0;
-      return;
-    }
-    state = 'UPLOADING';
-    setStatus('🔄 已录 ' + (frames / 10).toFixed(1) + ' 秒，上传识别中…');
-    var wav = encodeWav(Float32Array.from(rec));
-    try {
-      var r = await fetch('/api/wake_audio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'audio/wav' },
-        body: wav,
-      });
-      var j = await r.json();
-      // 注意：服务器处理完（含 LLM 回复 + TTS）才会返回，回复由页面定时器逐句展示
-      if (j.ok && j.empty) setStatus('⚠️ 未识别到语音，请再说一次');
-      else if (!j.ok) setStatus('⚠️ 处理失败：' + (j.error || ''));
-      else setStatus('🤖 已识别：「' + j.user_text + '」— 回复马上就来');
-    } catch (e) {
-      setStatus('⚠️ 上传失败：' + e);
-    }
-    rec = []; frames = 0; hasSpeech = false; silence = 0;
-    state = 'LISTENING';
-  }
-
   function stopWakeMode() {
     state = 'IDLE';
     if (ws) { try { ws.close(); } catch (e) {} ws = null; }
     if (processor) { try { processor.disconnect(); } catch (e) {} processor = null; }
     if (micStream) { micStream.getTracks().forEach(function (t) { t.stop(); }); micStream = null; }
     if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
-    ring = []; rec = []; frames = 0; hasSpeech = false; silence = 0;
+    ring = [];
+    stopPlayback();
     setStatus('免提唤醒已关闭');
   }
 
@@ -203,7 +190,7 @@
         ring.push.apply(ring, f32);
         while (ring.length >= CHUNK) {
           var chunk = ring.splice(0, CHUNK);
-          onChunk(Float32Array.from(chunk));
+          sendToWs(Float32Array.from(chunk));  // 持续推流：服务器按会话状态路由
         }
       };
       src.connect(processor);
@@ -223,8 +210,17 @@
     else stopWakeMode();
   }
 
+  // 停止播报：通知服务器终止当前回复 + 本地立即静音
+  function wakeStop() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'stop' }));
+    }
+    stopPlayback();
+  }
+
   // 按钮点击由 Gradio 的 click 事件（js 参数）调用本函数，勿在此重复绑定防双重切换
   window.wakeToggle = wakeToggle;
+  window.wakeStop = wakeStop;
   window.addEventListener('beforeunload', function () {
     if (state !== 'IDLE') stopWakeMode();
   });
