@@ -17,7 +17,7 @@ class Config:
     WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
     VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.02"))
-    SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "1.0"))
+    SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "0.8"))
 
     # 唤醒词「小音」：sherpa-onnx KWS 方案（默认，本地模型）
     WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "1") == "1"
@@ -43,6 +43,16 @@ class Config:
     # 快递查询（快递鸟免费接口，可选）：https://www.kdniao.com 注册后申请即时查询API
     KDNIAO_EBUSINESS_ID = os.getenv("KDNIAO_EBUSINESS_ID", "")
     KDNIAO_APP_KEY = os.getenv("KDNIAO_APP_KEY", "")
+
+    # 声纹锁定：识别并记忆主人的声音，其他人说「小音」会被忽略
+    # 首次唤醒录入声纹；重置对话/重连后重新录入
+    SPEAKER_LOCK = os.getenv("SPEAKER_LOCK", "1") == "1"
+    SPEAKER_MODEL_PATH = os.getenv(
+        "SPEAKER_MODEL_PATH",
+        str(Path(PROJECT_ROOT) / "models" / "speech_campplus_sv_zh_en_16k-common_advanced.onnx"),
+    )
+    # 声纹匹配阈值（余弦相似度 0~1，越大越严格；误拒绝多就调低）
+    SPEAKER_THRESHOLD = float(os.getenv("SPEAKER_THRESHOLD", "0.6"))
 
     SYSTEM_PROMPT = (
         "你是一个友好的 AI 语音助手，名叫小音。"

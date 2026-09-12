@@ -24,6 +24,7 @@ from typing import Callable, Optional
 import numpy as np
 from fastapi import WebSocket
 
+from config import Config
 from conversation_store import save_conversation, clear_conversation
 from speech_utils import sentence_stream
 
@@ -33,12 +34,13 @@ CHUNK = 1600                      # 每块样本数（0.1s）
 FRAME_BYTES = CHUNK * 2           # int16 单声道
 MAX_BUFFER_BYTES = 100_000        # 异常客户端缓冲上限
 KWS_COOLDOWN_SEC = 5.0            # 单连接唤醒冷却
-VAD_THRESHOLD = 0.02              # 能量门阈值（对齐 audio_utils.py）
-UTTERANCE_SILENCE_SEC = 1.0       # 尾静音判定
+VAD_THRESHOLD = Config.VAD_THRESHOLD        # 能量门阈值（对齐 audio_utils.py）
+UTTERANCE_SILENCE_SEC = Config.SILENCE_DURATION  # 尾静音判定（.env 可调）
 UTTERANCE_MIN_SEC = 0.3           # 最短有效话语
 UTTERANCE_MAX_SEC = 12.0          # 最长录制
 BARGE_STREAK = 3                  # 连续 0.3s 有语音判定打断
 SEND_TIMEOUT = 10.0               # 单条消息发送超时（背压保护，超时中止轮次）
+LISTEN_NO_SPEECH_TIMEOUT = 15.0   # 唤醒后一直没听到声音：超时提示并回待机
 
 
 class _SendAborted(Exception):
@@ -53,11 +55,13 @@ class VoiceDeps:
     stt: object = None
     bot: object = None
     tts: object = None
+    speaker: object = None                    # 声纹锁定（SpeakerVerifier 或 None）
     history: Optional[list] = None            # SERVER_HISTORY（全局共享）
     get_voice: Optional[Callable[[], str]] = None
     turn_lock: Optional[asyncio.Lock] = None  # 串行化所有轮次
     stt_lock: Optional[asyncio.Lock] = None   # faster-whisper 串行化
     kws_lock: Optional[asyncio.Lock] = None   # sherpa decode 串行化（跨连接）
+    speaker_lock: Optional[asyncio.Lock] = None  # 声纹提取串行化（跨连接）
     queue: Optional[asyncio.Queue] = None     # 轮次快照入队，gr.Timer 消费
     _locks_ready: bool = field(default=False, repr=False)
 
@@ -103,9 +107,13 @@ def iter_frames(buf: bytes) -> tuple:
 
 
 class UtteranceCollector:
-    """能量门 VAD 采集器：喂 0.1s 块，尾静音 1.0s 判定完成（参数对齐 audio_utils）。"""
+    """能量门 VAD 采集器：喂 0.1s 块，尾静音判定完成（参数对齐 audio_utils）。
 
-    def __init__(self):
+    threshold 可按唤醒时的语音电平校准传入（说话轻的人用更低的阈值）。
+    """
+
+    def __init__(self, threshold: float = None):
+        self._threshold = VAD_THRESHOLD if threshold is None else threshold
         self._frames: list[np.ndarray] = []
         self._has_speech = False
         self._silence = 0
@@ -119,7 +127,7 @@ class UtteranceCollector:
             return True
         level = float(np.abs(samples).mean())
         if not self._has_speech:
-            if level >= VAD_THRESHOLD:
+            if level >= self._threshold:
                 self._has_speech = True
                 self._frames.append(samples)
             else:
@@ -129,7 +137,7 @@ class UtteranceCollector:
                     self._frames.pop(0)
             return False
         self._frames.append(samples)
-        if level < VAD_THRESHOLD:
+        if level < self._threshold:
             self._silence += 1
             if self._silence >= self._silence_needed:
                 self.done = True
@@ -149,16 +157,21 @@ class UtteranceCollector:
     def frame_count(self) -> int:
         return len(self._frames)
 
+    @property
+    def has_speech(self) -> bool:
+        return self._has_speech
+
 
 class BargeDetector:
     """打断检测：连续 3 块（0.3s）有语音即判定；静音重置（对齐 play_file_with_barge_in）。"""
 
-    def __init__(self):
+    def __init__(self, threshold: float = None):
+        self._threshold = VAD_THRESHOLD if threshold is None else threshold
         self._streak = 0
 
     def feed(self, samples: np.ndarray) -> bool:
         level = float(np.abs(samples).mean())
-        if level > VAD_THRESHOLD:
+        if level > self._threshold:
             self._streak += 1
             return self._streak >= BARGE_STREAK
         self._streak = 0
@@ -191,11 +204,19 @@ class _Session:
         self.closed = False
         self._kws_stream = None      # 仅 rx_task 访问（IDLE 喂帧）
         self._kws_cooldown_until = 0.0
+        self._reject_cooldown_until = 0.0  # 声纹拒绝冷却，防连续拒绝
         self._collector: Optional[UtteranceCollector] = None
         self._barge = BargeDetector()
         self._pending_reset = False
         self.reply_outcome = ("done", "")
         self.barged = False
+        # 电平自适应：记录最近 2 秒的电平，唤醒时校准 VAD 阈值（说话轻的人也能检测）
+        self._level_ring: list = []
+        self._vad_threshold = VAD_THRESHOLD
+        # 声纹锁定：音频环形缓冲（最近 4 秒）+ 会话级登记表
+        self._audio_ring: list = []
+        self._speaker_manager = None
+        self._enrolled = False
         # 事件（rx_task 置位；actor 主循环消费）
         self.wake_event = asyncio.Event()
         self.text_event = asyncio.Event()
@@ -208,15 +229,76 @@ class _Session:
     def _voice(self) -> str:
         return self.voice or (self.deps.get_voice() if self.deps.get_voice else "zh-CN-XiaoyiNeural")
 
-    async def feed(self, samples: np.ndarray):
+    def _calibrate_vad(self) -> float:
+        """按唤醒词前后 2 秒的电平校准 VAD 阈值：电平低则降阈值，范围 [基础/4, 基础]。"""
+        if not self._level_ring:
+            return VAD_THRESHOLD
+        wake_level = max(self._level_ring)
+        return max(VAD_THRESHOLD / 4, min(VAD_THRESHOLD, wake_level / 2))
+
+    def _speaker_check(self, samples: np.ndarray) -> bool:
+        """声纹锁定校验：未录入则录入；已录入则比对。返回 True 表示通过（或未启用）。"""
+        deps = self.deps
+        if deps.speaker is None:
+            return True
+        if self._speaker_manager is None:
+            self._speaker_manager = deps.speaker.create_manager()
+        try:
+            if not self._enrolled:
+                # 首次唤醒：录入主人声纹
+                embedding = deps.speaker.extract(samples)
+                self._speaker_manager.add("主人", embedding)
+                self._enrolled = True
+                print("[声纹] 已录入主人声音（下次唤醒开始校验）", flush=True)
+                return True
+            return deps.speaker.verify(self._speaker_manager, samples)
+        except Exception as e:
+            print(f"[声纹] 校验失败，跳过锁定: {e}", flush=True)
+            return True
+
+    def _push_audio_ring(self, samples: np.ndarray):
+        self._audio_ring.append(samples)
+        if len(self._audio_ring) > 40:  # 保留 4 秒
+            self._audio_ring.pop(0)
+
+    async def feed(self, samples: np.ndarray, ws: WebSocket = None):
         """rx_task 调用：按会话状态路由音频。"""
+        level = float(np.abs(samples).mean())
+        self._level_ring.append(level)
+        if len(self._level_ring) > 20:  # 保留 2 秒
+            self._level_ring.pop(0)
         if self.state == "IDLE":
             if self._kws_stream is None or self.deps.kws is None:
                 return
+            self._push_audio_ring(samples)
             async with self.deps.kws_lock:
                 keyword = self.deps.kws.feed(self._kws_stream, samples)
             if keyword and time.time() >= self._kws_cooldown_until:
+                if time.time() < self._reject_cooldown_until:
+                    return  # 拒绝冷却期内不再校验，避免连续拒绝刷屏/重复算力
+                # 声纹锁定：用唤醒词前后 4 秒音频录入/比对，用后清空避免混入旧音频
+                wake_audio = (
+                    np.concatenate(self._audio_ring)
+                    if self._audio_ring
+                    else np.zeros(1600, dtype=np.float32)
+                )
+                self._audio_ring.clear()
+                if self.deps.speaker_lock is not None:
+                    async with self.deps.speaker_lock:
+                        ok = await asyncio.to_thread(self._speaker_check, wake_audio)
+                else:
+                    ok = await asyncio.to_thread(self._speaker_check, wake_audio)
+                if not ok:
+                    self._reject_cooldown_until = time.time() + KWS_COOLDOWN_SEC
+                    print("[声纹] 声音不匹配，已忽略", flush=True)
+                    if ws is not None:
+                        await _safe_send_json(
+                            ws, {"type": "speaker_reject", "text": "声音不是主人，已忽略"}
+                        )
+                    return
+                # 通过：才进入唤醒冷却（主人紧接着再喊也能立即响应）
                 self._kws_cooldown_until = time.time() + KWS_COOLDOWN_SEC
+                self._vad_threshold = self._calibrate_vad()
                 self.wake_event.set()
         elif self.state == "LISTENING":
             if self._collector is not None and self._collector.feed(samples):
@@ -242,15 +324,17 @@ class _Session:
             self.reset_event.set()
 
 
-async def _wait_any(s: _Session, events: dict) -> str:
-    """等待任一事件（或连接关闭）；返回触发的事件名。"""
+async def _wait_any(s: _Session, events: dict, timeout: float = None) -> str:
+    """等待任一事件（或连接关闭/超时）；返回触发的事件名或 "timeout"。"""
     tasks = {name: asyncio.create_task(ev.wait()) for name, ev in events.items()}
     try:
-        done, _ = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(
+            tasks.values(), return_when=asyncio.FIRST_COMPLETED, timeout=timeout
+        )
         for name, t in tasks.items():
             if t in done:
                 return name
-        return ""  # 不可达
+        return "timeout"
     finally:
         for t in tasks.values():
             t.cancel()
@@ -265,6 +349,9 @@ async def _do_reset(ws: WebSocket, s: _Session):
         pop_latest_turn(deps.queue)
     s.reset_event.clear()
     s._pending_reset = False
+    # 重新录入声纹：重置后下一次唤醒视为新主人
+    s._speaker_manager = None
+    s._enrolled = False
     await _safe_send_json(ws, {"type": "status", "text": "🔄 对话已重置"})
     deps.queue.put_nowait(
         {"sentences": [], "status": "🔄 对话已重置", "history": list(deps.history)}
@@ -323,7 +410,7 @@ async def _reply_phase(ws: WebSocket, s: _Session, user_text: str, prefix: str):
     s.state = "REPLYING"
     s.reply_outcome = ("done", "")
     s.barged = False
-    s._barge = BargeDetector()
+    s._barge = BargeDetector(threshold=s._vad_threshold)
     s.barge_event.clear()
     s.stop_event.clear()
 
@@ -359,9 +446,12 @@ async def _listening_phase(ws: WebSocket, s: _Session):
     """LISTENING：采集话语 → STT → 回复。返回后状态由调用方设置。"""
     deps = s.deps
     s.state = "LISTENING"
-    s._collector = UtteranceCollector()
+    s._collector = UtteranceCollector(threshold=s._vad_threshold)
     s.utterance_done.clear()
-    trigger = await _wait_any(s, {"done": s.utterance_done, "reset": s.reset_event})
+    trigger = await _wait_any(
+        s, {"done": s.utterance_done, "reset": s.reset_event},
+        timeout=LISTEN_NO_SPEECH_TIMEOUT,
+    )
     if s.closed:
         return "closed"
     if trigger == "reset":
@@ -370,14 +460,30 @@ async def _listening_phase(ws: WebSocket, s: _Session):
 
     audio = s._collector.take()
     s._collector = None
-    if len(audio) < int(SAMPLE_RATE * UTTERANCE_MIN_SEC):
-        return "too_short"  # 太短，回 IDLE 继续监听
 
+    if trigger == "timeout":
+        # 一直没听到声音：给用户明确反馈，回待机
+        await _safe_send_json(
+            ws, {"type": "status", "text": "👂 没有听到声音，说「小音」再试一次"}
+        )
+        return "timeout"
+
+    if len(audio) < int(SAMPLE_RATE * UTTERANCE_MIN_SEC):
+        await _safe_send_json(
+            ws, {"type": "status", "text": "⚠️ 语音太短没听清，说「小音」再试一次"}
+        )
+        return "too_short"  # 回 IDLE 继续监听
+
+    # 即时反馈：STT 要 1~3 秒，先告知用户「正在识别」降低等待感
+    await _safe_send_json(ws, {"type": "status", "text": "🎤 正在识别…"})
     async with deps.stt_lock:
         user_text = await asyncio.to_thread(deps.stt.transcribe, audio, SAMPLE_RATE)
     if s.closed:
         return "closed"
     if not user_text:
+        await _safe_send_json(
+            ws, {"type": "status", "text": "⚠️ 没识别到内容，说「小音」再试一次"}
+        )
         return "empty"
 
     await _safe_send_json(ws, {"type": "transcript", "text": user_text})
@@ -411,7 +517,7 @@ async def _session(ws: WebSocket, deps: VoiceDeps):
                         samples = (
                             np.frombuffer(frame, dtype="<i2").astype(np.float32) / 32768.0
                         )
-                        await s.feed(samples)
+                        await s.feed(samples, ws)
                 elif msg.get("text") is not None:
                     try:
                         await s.handle_control(json.loads(msg["text"]), ws)

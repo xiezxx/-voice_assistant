@@ -37,6 +37,7 @@ from tts import SpeechSynthesizer
 from speech_utils import sentence_stream, audio_duration_sec
 from conversation_store import save_conversation, load_conversation, clear_conversation
 from wakeword import KwsFeedDetector, sherpa_available
+from speaker import SpeakerVerifier, speaker_available
 from voice_server import (
     VoiceDeps,
     register_routes,
@@ -462,16 +463,30 @@ with gr.Blocks() as demo:
 # ── 自定义路由注册（必须在 launch 之前） ───────────────────────
 
 _kws_detector = KwsFeedDetector() if _kws_ok else None
+
+_speaker_ok, _speaker_reason = speaker_available()
+_speaker_detector = None
+if _speaker_ok:
+    try:
+        _speaker_detector = SpeakerVerifier()
+        print("[声纹] 主人声音锁定已启用（首次唤醒录入，重置/重连后重新录入）")
+    except Exception as e:
+        print(f"[声纹] 模型加载失败，已停用声纹锁定: {e}")
+else:
+    print(f"[声纹] 声纹锁定未启用（{_speaker_reason}）")
+
 _voice_deps = VoiceDeps(
     kws=_kws_detector,
     stt=stt,
     bot=bot,
     tts=tts,
+    speaker=_speaker_detector,
     history=SERVER_HISTORY,
     get_voice=lambda: SERVER_VOICE,
     turn_lock=TURN_LOCK,
     stt_lock=STT_LOCK,
     kws_lock=KWS_LOCK,
+    speaker_lock=asyncio.Lock(),
     queue=WAKE_QUEUE,
 )
 register_routes(demo.app, _voice_deps)

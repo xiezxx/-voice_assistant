@@ -84,17 +84,57 @@ class FakeTTS:
         return b"\xff\xfb" + text.encode("utf-8")
 
 
-def _make_deps(bot=None, kws=None):
+class EmptySTT(FakeSTT):
+    """识别返回空（安静/听不清时的真实路径）。"""
+
+    def transcribe(self, audio, sample_rate=None):
+        return ""
+
+
+class FakeSpeaker:
+    """声纹锁定 Fake：嵌入 = 音频平均电平；匹配 = 电平差 < threshold（0.2）。
+
+    用电平 0.5 的帧当「主人」，0.05 的帧当「别人」。
+    """
+
+    threshold = 0.2
+
+    class _Manager:
+        def __init__(self):
+            self.emb = None
+
+        def add(self, name, emb):
+            self.emb = emb
+
+        def search(self, emb, threshold):
+            if self.emb is None:
+                return ""
+            diff = abs(float(emb[0]) - float(self.emb[0]))
+            return "主人" if diff < threshold else ""
+
+    def create_manager(self):
+        return self._Manager()
+
+    def extract(self, samples):
+        return [float(np.abs(samples).mean())]
+
+    def verify(self, manager, samples):
+        return bool(manager.search(self.extract(samples), self.threshold))
+
+
+def _make_deps(bot=None, kws=None, stt=None, speaker=None):
     return voice_server.VoiceDeps(
         kws=kws if kws is not None else FakeKws(),
-        stt=FakeSTT(),
+        stt=stt if stt is not None else FakeSTT(),
         bot=bot if bot is not None else FastBot(),
         tts=FakeTTS(),
+        speaker=speaker,
         history=[],
         get_voice=lambda: "zh-CN-XiaoyiNeural",
         turn_lock=asyncio.Lock(),
         stt_lock=asyncio.Lock(),
         kws_lock=asyncio.Lock(),
+        speaker_lock=asyncio.Lock(),
         queue=asyncio.Queue(),
     )
 
@@ -137,12 +177,26 @@ def _frame(level: float, n: int = 1600) -> bytes:
     return pcm.tobytes()
 
 
-async def _send_speech(ws, loud=6, silence=12):
-    """唤醒后的典型话语：0.6s 语音 + 1.2s 静音。"""
+async def _send_speech(ws, loud=6, silence=None):
+    """唤醒后的典型话语：0.6s 语音 + 尾静音（按 .env 配置的 SILENCE_DURATION 自适应）。"""
+    from config import Config
+
+    if silence is None:
+        silence = int(Config.SILENCE_DURATION * 10) + 2
     for _ in range(loud):
         await ws.send(_frame(0.5))
     for _ in range(silence):
         await ws.send(_frame(0.0))
+
+
+async def _expect_transcript(ws, timeout=15.0):
+    """等待 transcript 事件（跳过 mp3 二进制帧与 status 等中间事件）。"""
+    while True:
+        msg = await _expect(ws, timeout)
+        if isinstance(msg, bytes):
+            continue
+        if msg["type"] == "transcript":
+            return msg
 
 
 async def _expect_silence(ws, timeout=1.2):
@@ -184,7 +238,7 @@ async def _test_cooldown_rearm():
             await ws.send(_frame(0.1))
             assert (await _expect(ws))["type"] == "wake"
             await _send_speech(ws)
-            assert (await _expect(ws))["type"] == "transcript"
+            await _expect_transcript(ws)
             while True:
                 msg = await _expect(ws, timeout=10.0)
                 if isinstance(msg, bytes):
@@ -213,8 +267,8 @@ async def _test_full_turn():
             await ws.send(_frame(0.1))          # 唤醒
             assert (await _expect(ws))["type"] == "wake"
             await _send_speech(ws)
-            msg = await _expect(ws)
-            assert msg["type"] == "transcript" and msg["text"] == "现在几点", msg
+            msg = await _expect_transcript(ws)
+            assert msg["text"] == "现在几点", msg
             events = []
             while True:
                 msg = await _expect(ws, timeout=10.0)
@@ -248,8 +302,8 @@ async def _test_barge_in():
             await _expect(ws)  # ready
             await ws.send(_frame(0.1))
             assert (await _expect(ws))["type"] == "wake"
-            await _send_speech(ws, loud=6, silence=12)
-            assert (await _expect(ws))["type"] == "transcript"
+            await _send_speech(ws)
+            await _expect_transcript(ws)
             # 第一句出现后，回复卡在长暂停处；发 0.4s 语音触发打断
             msg = await _expect(ws, timeout=10.0)
             assert msg["type"] == "sentence", msg
@@ -268,8 +322,7 @@ async def _test_barge_in():
             assert got_barge, "应收到 barge_in"
             # 无需再唤醒：继续说 → 第二次 transcript
             await _send_speech(ws)
-            msg = await _expect(ws, timeout=10.0)
-            assert msg["type"] == "transcript", msg
+            await _expect_transcript(ws)
             # 部分回复已补录进服务端历史（打断后上下文完整）
             assert any(
                 m.get("role") == "assistant" and "第一句" in str(m.get("content"))
@@ -310,8 +363,8 @@ async def _test_stop_control():
             await _expect(ws)  # ready
             await ws.send(_frame(0.1))
             assert (await _expect(ws))["type"] == "wake"
-            await _send_speech(ws, loud=6, silence=12)
-            assert (await _expect(ws))["type"] == "transcript"
+            await _send_speech(ws)
+            await _expect_transcript(ws)
             assert (await _expect(ws, timeout=10.0))["type"] == "sentence"
             await ws.send(json.dumps({"type": "stop"}))
             while True:
@@ -331,6 +384,74 @@ async def _test_stop_control():
     finally:
         _stop_server(server, thread)
     print("✓ 停止控制：stop→turn_end(stopped)→回 IDLE 重新布防唤醒")
+
+
+async def _test_speaker_lock():
+    """声纹锁定：首唤醒录入 → 别人唤醒被拒 → 主人唤醒通过。"""
+    deps = _make_deps(kws=FakeKws(fire_on=(1, 2, 3)), speaker=FakeSpeaker())
+    server, thread = _run_server(deps)
+    try:
+        async with await _connect() as ws:
+            await _expect(ws)  # ready
+            # 1. 主人（电平 0.5）首次唤醒：录入 + 正常唤醒
+            await ws.send(_frame(0.5))
+            assert (await _expect(ws))["type"] == "wake"
+            await _send_speech(ws)
+            await _expect_transcript(ws)
+            while True:
+                msg = await _expect(ws, timeout=10.0)
+                if isinstance(msg, bytes):
+                    continue
+                if msg["type"] == "turn_end":
+                    break
+            # 2. 冷却过后，别人（电平 0.05）唤醒：拒绝且不触发 wake
+            await asyncio.sleep(5.2)
+            await ws.send(_frame(0.05))
+            msg = await _expect(ws, timeout=10.0)
+            assert msg["type"] == "speaker_reject", msg
+            await _expect_silence(ws, timeout=1.2)
+            # 3. 等拒绝冷却过期后，主人再唤醒：通过
+            await asyncio.sleep(5.2)
+            await ws.send(_frame(0.5))
+            msg = await _expect(ws, timeout=10.0)
+            assert msg["type"] == "wake", msg
+    finally:
+        _stop_server(server, thread)
+    print("✓ 声纹锁定：首唤醒录入/他人拒绝/主人通过")
+
+
+async def _test_empty_stt_feedback():
+    """识别为空时：必须给用户明确反馈（不能静默回待机）。"""
+    deps = _make_deps(stt=EmptySTT())
+    server, thread = _run_server(deps)
+    try:
+        async with await _connect() as ws:
+            await _expect(ws)  # ready
+            await ws.send(_frame(0.1))
+            assert (await _expect(ws))["type"] == "wake"
+            await _send_speech(ws)
+            # 先收到「正在识别…」，随后收到「没识别到内容」提示
+            msg = None
+            while True:
+                msg = await _expect_transcript_ish(ws)
+                if msg["type"] == "transcript" or "没识别" in msg.get("text", ""):
+                    break
+            assert msg["type"] == "status" and "没识别" in msg["text"], msg
+            # 回待机：冷却期内不再唤醒（AlwaysKws 场景由冷却测试覆盖，此处确认无事件）
+            await _expect_silence(ws, timeout=1.2)
+    finally:
+        _stop_server(server, thread)
+    print("✓ 空识别反馈：status 提示后回待机（不静默）")
+
+
+async def _expect_transcript_ish(ws, timeout=15.0):
+    """等待 transcript 或 status 事件（跳过 mp3 二进制帧）。"""
+    while True:
+        msg = await _expect(ws, timeout)
+        if isinstance(msg, bytes):
+            continue
+        if msg["type"] in ("transcript", "status"):
+            return msg
 
 
 def _test_real_integration():
@@ -406,13 +527,11 @@ def _test_real_integration():
             assert msg["type"] == "wake", msg
             for f in _frames_of(q_audio):
                 await ws.send(f)
-            await ws.send(_frame(0.0))
-            await ws.send(_frame(0.0))
-            msg = await _expect(ws, timeout=20.0)
+            for _ in range(int(Config.SILENCE_DURATION * 10) + 3):  # 尾静音补足
+                await ws.send(_frame(0.0))
+            msg = await _expect_transcript(ws, timeout=30.0)
             # Whisper 可能输出繁体（幾點/現在），按语义断言
-            assert msg["type"] == "transcript" and (
-                "点" in msg["text"] or "點" in msg["text"]
-            ), msg
+            assert "点" in msg["text"] or "點" in msg["text"], msg
             got_sentence = got_mp3 = False
             while True:
                 msg = await _expect(ws, timeout=60.0)
@@ -442,6 +561,8 @@ def main():
     asyncio.run(_test_barge_in())
     asyncio.run(_test_text_control())
     asyncio.run(_test_stop_control())
+    asyncio.run(_test_empty_stt_feedback())
+    asyncio.run(_test_speaker_lock())
     _test_real_integration()
     print("\n全部通过 ✅")
 

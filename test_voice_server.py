@@ -9,6 +9,7 @@ import numpy as np
 
 from voice_server import (
     FRAME_BYTES,
+    UTTERANCE_SILENCE_SEC,
     iter_frames,
     UtteranceCollector,
     BargeDetector,
@@ -16,6 +17,8 @@ from voice_server import (
     should_advance,
     unlink_path,
 )
+
+_SIL_FRAMES = int(UTTERANCE_SILENCE_SEC * 10)  # 尾静音判定块数（随配置变化）
 
 
 def test_iter_frames():
@@ -40,26 +43,26 @@ def _make_chunk(level: float, n: int = 1600) -> np.ndarray:
 
 
 def test_utterance_collector():
-    # 长静音预卷 → 0.5s 语音 → 1.0s 静音 → done，且超长前置静音被截到 1s 预卷
+    # 长静音预卷 → 0.5s 语音 → 尾静音满额 → done，且超长前置静音被截到预卷上限
     c = UtteranceCollector()
     for _ in range(20):  # 2s 静音预卷（超过预卷上限，应被截掉一半）
         assert not c.feed(_make_chunk(0.0))
     for _ in range(5):  # 0.5s 语音
         assert not c.feed(_make_chunk(0.5))
-    for _ in range(9):  # 0.9s 静音（不结束）
+    for _ in range(_SIL_FRAMES - 1):  # 尾静音差一块（不结束）
         assert not c.feed(_make_chunk(0.0))
-    assert c.feed(_make_chunk(0.0))  # 第 10 块静音（满 1.0s）→ done
+    assert c.feed(_make_chunk(0.0))  # 最后一块静音 → done
     audio = c.take()
     blocks = len(audio) // 1600
-    assert blocks <= 10 + 5 + 10, f"前置静音应被截断: {blocks} 块"
+    assert blocks <= _SIL_FRAMES + 5 + _SIL_FRAMES, f"前置静音应被截断: {blocks} 块"
     assert blocks >= 5, f"语音不应被截掉: {blocks} 块"
     # 短语音（0.2s）+ 尾静音也会 done（含尾静音，由调用方按总时长过滤，对齐 audio_utils）
     c = UtteranceCollector()
     for _ in range(2):
         assert not c.feed(_make_chunk(0.5))
-    for _ in range(12):
+    for _ in range(_SIL_FRAMES + 2):
         c.feed(_make_chunk(0.0))
-    assert c.done and len(c.take()) == (2 + 10) * 1600
+    assert c.done and len(c.take()) == (2 + _SIL_FRAMES) * 1600
     # 长语音 12s 上限强制结束
     c = UtteranceCollector()
     for i in range(12 * 10):
@@ -86,6 +89,23 @@ def test_barge_detector():
     assert not d.feed(_make_chunk(0.5))
     assert d.feed(_make_chunk(0.5))
     print("✓ 打断检测（3 块触发/静音重置）")
+
+
+def test_vad_calibration():
+    """唤醒电平自适应：说话轻的人得到更低的 VAD 阈值，范围 [基础/4, 基础]。"""
+    from voice_server import _Session, VAD_THRESHOLD
+
+    s = _Session.__new__(_Session)  # 绕过 __init__，只测纯校准逻辑
+    s._level_ring = []
+    assert s._calibrate_vad() == VAD_THRESHOLD, "无电平数据时保持基础阈值"
+    s._level_ring = [0.005, 0.01, 0.008]  # 唤醒语音电平 0.01（较轻）
+    t = s._calibrate_vad()
+    assert VAD_THRESHOLD / 4 <= t <= VAD_THRESHOLD / 2, t
+    s._level_ring = [0.5, 0.4]  # 大声说话：封顶在基础阈值
+    assert s._calibrate_vad() == VAD_THRESHOLD
+    s._level_ring = [0.001]  # 极轻：压到下限
+    assert s._calibrate_vad() == VAD_THRESHOLD / 4
+    print("✓ VAD 阈值自适应校准（轻说话降阈值/大声封顶/下限保护）")
 
 
 def test_queue_collapse():
@@ -144,6 +164,7 @@ if __name__ == "__main__":
     test_iter_frames()
     test_utterance_collector()
     test_barge_detector()
+    test_vad_calibration()
     test_queue_collapse()
     test_should_advance()
     print("\n全部通过 ✅")

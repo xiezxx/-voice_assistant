@@ -97,6 +97,9 @@
         stopPlayback();
         setStatus('⏹ 已打断 — 请继续说');
         break;
+      case 'speaker_reject':
+        setStatus('🔇 声音不是主人，已忽略');
+        break;
       case 'turn_end':
         setStatus(m.status || '✅ 完成 — 说「小音」继续');
         break;

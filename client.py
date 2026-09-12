@@ -109,6 +109,8 @@ async def recv_loop(ws, player: PygamePlayer):
         elif t == "barge_in":
             player.stop()
             print("\n⏹ 被打断 — 请继续说", flush=True)
+        elif t == "speaker_reject":
+            print("\n🔇 声音不是主人，已忽略", flush=True)
         elif t == "turn_end":
             print(f"\n[状态] {ev.get('status', '')}", flush=True)
         elif t == "error":
