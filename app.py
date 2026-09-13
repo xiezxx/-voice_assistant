@@ -502,6 +502,9 @@ demo.app.mount(
 if __name__ == "__main__":
     # 端口可用 PORT 覆盖（默认 7860）：端口被占或要跑多个实例时用
     _port = int(os.getenv("PORT", "7860"))
+    # 缺 Key 也把界面拉起来（方便先看界面），但不能等用户说第一句话才发现
+    if not Config.validate():
+        print("\n[提示] 没有 Key 界面仍可打开，但对话会失败；补好 .env 后重启即可。")
     print(f"\n[就绪] 启动 Web 界面（端口 {_port}）...")
     demo.launch(
         server_name="0.0.0.0",
