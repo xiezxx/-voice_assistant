@@ -20,9 +20,17 @@ import asyncio
 import json
 import os
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
+
+# pythonw（双击 bat 启动）无控制台：print 重定向到日志，避免崩溃
+if sys.stdout is None:
+    sys.stdout = open(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "pet_run.log"),
+        "a", encoding="utf-8",
+    )
 
 PET_DIR = Path(__file__).parent / "web" / "pet"
 
@@ -330,16 +338,38 @@ def _startup_file() -> Path:
 
 
 def _make_tray_icon():
-    """用 PIL 画一个粉色圆脸小音图标。"""
-    from PIL import Image, ImageDraw
+    """用 PIL 绘制精致版小音托盘图标：渐变脸 + 猫耳 + 高光眼。"""
+    from PIL import Image, ImageDraw, ImageFilter
 
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+
+    # 径向渐变圆脸
+    grad = Image.new("RGBA", (size * 2, size * 2), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(grad)
+    gd.ellipse([8, 8, size * 2 - 8, size * 2 - 8], fill=(255, 232, 238, 255))
+    gd.ellipse([size - 44, size - 52, size + 44, size + 36], fill=(255, 190, 205, 255))
+    grad = grad.filter(ImageFilter.GaussianBlur(10))
+    img = Image.alpha_composite(img, grad.resize((size, size)).crop((0, 0, size, size)))
+
     d = ImageDraw.Draw(img)
-    d.ellipse([4, 4, 60, 60], fill=(255, 211, 220, 255))      # 圆脸
-    d.ellipse([18, 22, 26, 34], fill=(74, 59, 50, 255))       # 左眼
-    d.ellipse([38, 22, 46, 34], fill=(74, 59, 50, 255))       # 右眼
-    d.ellipse([22, 44, 42, 52], fill=(255, 183, 200, 255))    # 腮红
-    d.arc([28, 38, 36, 48], 20, 160, fill=(74, 59, 50, 255), width=2)  # 嘴
+    # 猫耳
+    d.polygon([(16, 22), (10, 4), (30, 12)], fill=(255, 214, 224, 255))
+    d.polygon([(48, 22), (54, 4), (34, 12)], fill=(255, 214, 224, 255))
+    d.polygon([(18, 18), (15, 10), (26, 14)], fill=(255, 158, 178, 255))
+    d.polygon([(46, 18), (49, 10), (38, 14)], fill=(255, 158, 178, 255))
+    # 脸
+    d.ellipse([12, 10, 52, 54], fill=(255, 224, 231, 255))
+    # 眼睛（深可可 + 白色高光）
+    d.ellipse([19, 24, 28, 35], fill=(74, 59, 50, 255))
+    d.ellipse([36, 24, 45, 35], fill=(74, 59, 50, 255))
+    d.ellipse([21, 26, 24, 29], fill=(255, 255, 255, 255))
+    d.ellipse([38, 26, 41, 29], fill=(255, 255, 255, 255))
+    # 腮红
+    d.ellipse([13, 36, 21, 42], fill=(255, 170, 190, 190))
+    d.ellipse([43, 36, 51, 42], fill=(255, 170, 190, 190))
+    # 微笑
+    d.arc([27, 36, 37, 48], 20, 160, fill=(74, 59, 50, 255), width=2)
     return img
 
 
@@ -351,10 +381,12 @@ def start_tray(window, bridge: "UiBridge"):
 
     def toggle_show(icon, item):
         try:
-            if window.hidden:
-                window.show()
-            else:
+            if _GLOBALS.get("pet_visible", True):
                 window.hide()
+                _GLOBALS["pet_visible"] = False
+            else:
+                window.show()
+                _GLOBALS["pet_visible"] = True
         except Exception:
             pass
 
@@ -391,7 +423,17 @@ def start_tray(window, bridge: "UiBridge"):
             window.destroy()
         except Exception:
             pass
-        icon.stop()
+        try:
+            icon.stop()
+        except Exception:
+            pass
+
+        def _force_exit():
+            # 兜底：销毁后进程未正常退出则强制结束（pystray/webview 偶发不退出）
+            time.sleep(1.5)
+            os._exit(0)
+
+        threading.Thread(target=_force_exit, daemon=True).start()
 
     menu = pystray.Menu(
         pystray.MenuItem("显示 / 隐藏宠物", toggle_show, default=True),
