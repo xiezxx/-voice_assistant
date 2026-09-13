@@ -15,6 +15,9 @@ class Config:
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
     WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+    # Whisper 模型下载源：国内直连 huggingface.co 不通（实测超时），默认走镜像。
+    # 想用官方源或自建镜像，在 .env 里设 HF_ENDPOINT 覆盖。
+    HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 
     VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.02"))
     SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "0.8"))

@@ -21,11 +21,15 @@
 
 ### 1. 安装依赖
 ```bash
+# 可选但推荐：先建虚拟环境
+python -m venv .venv
+.venv\Scripts\activate          # Windows；macOS/Linux 用 source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
 ### 2. 配置 API Key
-编辑 `.env` 文件：
+复制 `.env.example` 为 `.env`，填入 DeepSeek Key：
 ```
 DEEPSEEK_API_KEY=sk-你的key
 ```
@@ -36,7 +40,8 @@ python app.py
 # 浏览器打开 http://127.0.0.1:7860
 ```
 
-首次运行会自动下载 Whisper 模型（base 约 150MB）。
+首次运行会自动下载 Whisper 模型（base 约 150MB）。默认走 **hf-mirror.com 国内镜像**（直连 huggingface.co 在国内会超时）——想用官方源就在 `.env` 里设 `HF_ENDPOINT=https://huggingface.co`。
+端口可用环境变量覆盖：`PORT=7861 python app.py`。
 
 ### CLI 模式（终端交互）
 ```bash
@@ -97,6 +102,7 @@ python pet.py --no-on-top          # 不置顶
 
 - `双击 start_pet.bat`：自动检查并启动服务器（最小化窗口）+ 启动宠物（无控制台窗口）
 - `双击 install_autostart.bat`：设置**开机自启动**（登录 Windows 自动拉起服务器+宠物）；`uninstall_autostart.bat` 取消
+- 命令行等价写法：`python pet.py --install-autostart` / `--uninstall-autostart`
 - **系统托盘**（默认开启，`--no-tray` 关闭）：托盘小图标常驻——双击显示/隐藏宠物、换模型、开机自启开关（带勾选状态）、退出
 
 **三个模型**（右键「换模型」循环切换，选择会记住）：仙狐精灵 Senko / 黑猫精灵 Hijiki / Pio 小精灵。
@@ -260,7 +266,13 @@ voice_assistant/
 | WHISPER_MODEL | base | 模型大小：tiny/base/small/medium/large-v3 |
 | WHISPER_DEVICE | cpu | 推理设备：cpu 或 cuda |
 | VAD_THRESHOLD | 0.02 | 语音活动检测灵敏度 |
-| SILENCE_DURATION | 1.0 | CLI 模式静音判定秒数 |
+| SILENCE_DURATION | 0.8 | 静音判定秒数（越大越等得久） |
+| PORT | 7860 | Web 界面端口 |
+| HF_ENDPOINT | https://hf-mirror.com | Whisper 模型下载源（国内默认镜像） |
+| WAKE_WORD_ENABLED | 1 | 免提唤醒开关 |
+| KWS_KEYWORDS_THRESHOLD | 0.25 | 唤醒词检测阈值（越小越灵敏） |
+| SPEAKER_LOCK | 1 | 声纹锁定开关 |
+| SPEAKER_THRESHOLD | 0.6 | 声纹匹配阈值（误拒绝多就调低） |
 
 ## 后续扩展方向
 

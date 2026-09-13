@@ -500,10 +500,12 @@ demo.app.mount(
 
 
 if __name__ == "__main__":
-    print("\n[就绪] 启动 Web 界面...")
+    # 端口可用 PORT 覆盖（默认 7860）：端口被占或要跑多个实例时用
+    _port = int(os.getenv("PORT", "7860"))
+    print(f"\n[就绪] 启动 Web 界面（端口 {_port}）...")
     demo.launch(
         server_name="0.0.0.0",
-        server_port=7860,
+        server_port=_port,
         share=False,  # 本地运行不需要公网链接
         theme=THEME,
         css=CSS,
