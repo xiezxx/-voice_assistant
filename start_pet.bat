@@ -1,15 +1,15 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-echo [å°éŸ³] æ£€æŸ¥æœåŠ¡å™¨...
+echo [Ð¡Òô] ¼ì²é·þÎñÆ÷...
 netstat -ano | findstr :7860 | findstr LISTENING >nul 2>&1
 if errorlevel 1 (
-    echo [å°éŸ³] å¯åŠ¨è¯­éŸ³æœåŠ¡å™¨ï¼ˆåŽå°æ— çª—å£ï¼Œæ—¥å¿— app_run.logï¼‰...
+    echo [Ð¡Òô] Æô¶¯ÓïÒô·þÎñÆ÷£¨ºóÌ¨ÎÞ´°¿Ú£¬ÈÕÖ¾ app_run.log£©...
     cscript //nologo "%~dp0start_hidden.vbs"
     timeout /t 28 /nobreak >nul
 ) else (
-    echo [å°éŸ³] æœåŠ¡å™¨å·²åœ¨è¿è¡Œ
+    echo [Ð¡Òô] ·þÎñÆ÷ÒÑÔÚÔËÐÐ
 )
-echo [å°éŸ³] å¯åŠ¨æ¡Œé¢å® ç‰©...
+echo [Ð¡Òô] Æô¶¯×ÀÃæ³èÎï...
 start "" pythonw pet.py
 exit

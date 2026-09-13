@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul
 set STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
-copy /y "%~dp0start_pet.bat" "%STARTUP%\å°éŸ³å® ç‰©.bat" >nul
-if exist "%STARTUP%\å°éŸ³å® ç‰©.bat" (
-    echo [å°éŸ³] å·²è®¾ç½®å¼€æœºè‡ªå¯åŠ¨ï¼ˆç™»å½• Windows åè‡ªåŠ¨å¯åŠ¨æœåŠ¡å™¨ + å® ç‰©ï¼‰
-    echo        æƒ³å–æ¶ˆæ—¶è¿è¡Œ uninstall_autostart.bat
+copy /y "%~dp0start_pet.bat" "%STARTUP%\Ğ¡Òô³èÎï.bat" >nul
+if exist "%STARTUP%\Ğ¡Òô³èÎï.bat" (
+    echo [Ğ¡Òô] ÒÑÉèÖÃ¿ª»ú×ÔÆô¶¯£¨µÇÂ¼ Windows ºó×Ô¶¯Æô¶¯·şÎñÆ÷ + ³èÎï£©
+    echo        ÏëÈ¡ÏûÊ±ÔËĞĞ uninstall_autostart.bat
 ) else (
-    echo [å°éŸ³] è®¾ç½®å¤±è´¥ï¼Œè¯·æ£€æŸ¥æƒé™
+    echo [Ğ¡Òô] ÉèÖÃÊ§°Ü£¬Çë¼ì²éÈ¨ÏŞ
 )
 pause
