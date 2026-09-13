@@ -1,15 +1,8 @@
 """语音识别模块（Speech-to-Text）：基于 Faster-Whisper 的本地语音转文字。"""
 
-import os
-
 import numpy as np
 from scipy.signal import resample
-from config import Config
-
-# faster-whisper 首次运行要从 HuggingFace 下载模型，而 huggingface_hub 只在 import 时
-# 读一次 HF_ENDPOINT —— 必须在这里（import faster_whisper 之前）设好。
-# .env 里显式设过 HF_ENDPOINT 则以用户配置为准。
-os.environ.setdefault("HF_ENDPOINT", Config.HF_ENDPOINT)
+from config import Config          # 顺带设置 HF_ENDPOINT 镜像（见 config.py 顶部）
 
 
 class SpeechRecognizer:

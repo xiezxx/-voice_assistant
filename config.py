@@ -7,6 +7,12 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).parent
 load_dotenv(PROJECT_ROOT / ".env")
 
+# Whisper 模型下载源：国内直连 huggingface.co 不通（实测超时），默认走镜像。
+# 同时写进环境变量——huggingface_hub 只在 import 时读一次 HF_ENDPOINT，
+# 放在这里（任何 import faster_whisper 之前）才能生效；.env 里设过则不覆盖。
+_HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ.setdefault("HF_ENDPOINT", _HF_ENDPOINT)
+
 
 class Config:
     """全局配置，从环境变量读取，有合理默认值。"""
@@ -15,9 +21,7 @@ class Config:
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
     WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-    # Whisper 模型下载源：国内直连 huggingface.co 不通（实测超时），默认走镜像。
-    # 想用官方源或自建镜像，在 .env 里设 HF_ENDPOINT 覆盖。
-    HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+    HF_ENDPOINT = _HF_ENDPOINT          # 见文件顶部：同时已写入环境变量
 
     VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.02"))
     SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "0.8"))
