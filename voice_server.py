@@ -3,8 +3,8 @@
 
 协议（详见 README「接入协议」）：
 - 客户端 → 服务器：二进制帧 = int16 LE 单声道 16k PCM（任意帧大小，服务器缓冲切分，
-  0.1s/1600 样本一块）；JSON 控制：hello / text / stop / reset。麦克风持续推流
-  （含 AI 播报期间，供服务器检测说话打断）。
+  0.1s/1600 样本一块）；JSON 控制：hello / text / stop / reset / listen（点击免唤醒词聆听，
+  仅待机生效）。麦克风持续推流（含 AI 播报期间，供服务器检测说话打断）。
 - 服务器 → 客户端：JSON 事件 ready / hello_ok / wake / transcript / status / sentence /
   audio / barge_in / turn_end / error；audio 事件后紧跟一个二进制帧 = 该句完整 mp3。
 
@@ -221,6 +221,7 @@ class _Session:
         self.wake_event = asyncio.Event()
         self.text_event = asyncio.Event()
         self.reset_event = asyncio.Event()
+        self.listen_event = asyncio.Event()
         self.utterance_done = asyncio.Event()
         self.barge_event = asyncio.Event()
         self.stop_event = asyncio.Event()
@@ -319,6 +320,10 @@ class _Session:
                 self.text_event.set()
         elif t == "stop":
             self.stop_event.set()
+        elif t == "listen":
+            # 单击宠物等显式动作：免唤醒词直接聆听（仅待机接受，声纹锁不拦显式授权）
+            if self.state == "IDLE":
+                self.listen_event.set()
         elif t == "reset":
             self._pending_reset = True
             self.reset_event.set()
@@ -525,7 +530,7 @@ async def _session(ws: WebSocket, deps: VoiceDeps):
                         pass
         finally:
             s.closed = True
-            for ev in (s.wake_event, s.text_event, s.reset_event,
+            for ev in (s.wake_event, s.text_event, s.reset_event, s.listen_event,
                        s.utterance_done, s.barge_event, s.stop_event):
                 ev.set()
 
@@ -538,15 +543,30 @@ async def _session(ws: WebSocket, deps: VoiceDeps):
             if s.state != "IDLE":
                 s.state = "IDLE"
                 continue
-            # IDLE：等唤醒 / 文字 / 重置
+            # IDLE：等唤醒 / 文字 / 点击 / 重置
             s.wake_event.clear()
             s.text_event.clear()
             s.reset_event.clear()
-            trigger = await _wait_any(s, {"wake": s.wake_event, "text": s.text_event, "reset": s.reset_event})
+            s.listen_event.clear()
+            trigger = await _wait_any(s, {
+                "wake": s.wake_event, "text": s.text_event,
+                "reset": s.reset_event, "listen": s.listen_event,
+            })
             if s.closed:
                 break
             if trigger == "reset":
                 continue  # 循环顶部处理 _pending_reset
+            if trigger == "listen":
+                # 显式点击：跳过唤醒词与声纹，直接聆听
+                print(f"[语音会话] 点击唤醒", flush=True)
+                await _safe_send_json(
+                    ws, {"type": "wake", "keyword": "小音", "source": "click"}
+                )
+                result = await _listening_phase(ws, s)
+                while result == "barged" and not s.closed:
+                    result = await _listening_phase(ws, s)
+                s.state = "IDLE"
+                continue
             if trigger == "text":
                 text = s._pending_text
                 s._pending_text = ""

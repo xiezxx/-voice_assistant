@@ -420,6 +420,30 @@ async def _test_speaker_lock():
     print("✓ 声纹锁定：首唤醒录入/他人拒绝/主人通过")
 
 
+async def _test_listen_control():
+    """点击唤醒：listen 免唤醒词进聆听（source=click）；声纹锁不拦显式点击；轮次中忽略。"""
+    deps = _make_deps(speaker=FakeSpeaker())
+    server, thread = _run_server(deps)
+    try:
+        async with await _connect() as ws:
+            await _expect(ws)  # ready
+            await ws.send(json.dumps({"type": "listen"}))
+            msg = await _expect(ws)
+            assert msg["type"] == "wake" and msg.get("source") == "click", msg
+            await ws.send(json.dumps({"type": "listen"}))  # LISTENING 中再点 → 忽略
+            await _send_speech(ws)
+            await _expect_transcript(ws)
+            while True:
+                msg = await _expect(ws, timeout=20.0)
+                if isinstance(msg, bytes):
+                    continue
+                if msg["type"] == "turn_end":
+                    break
+    finally:
+        _stop_server(server, thread)
+    print("✓ 点击唤醒：listen 免唤醒词进聆听（source=click；轮次中忽略）")
+
+
 async def _test_empty_stt_feedback():
     """识别为空时：必须给用户明确反馈（不能静默回待机）。"""
     deps = _make_deps(stt=EmptySTT())
@@ -563,6 +587,7 @@ def main():
     asyncio.run(_test_stop_control())
     asyncio.run(_test_empty_stt_feedback())
     asyncio.run(_test_speaker_lock())
+    asyncio.run(_test_listen_control())
     _test_real_integration()
     print("\n全部通过 ✅")
 

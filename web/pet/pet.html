@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --deep: #4A3B32;
+    --cream: #FFE3EA;
+  }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden;
+               background: transparent; font-family: "Microsoft YaHei", sans-serif; }
+  #pet { position: fixed; inset: 0; }
+  #drag-strip { position: fixed; top: 0; left: 0; right: 0; height: 36px;
+                z-index: 10; cursor: grab; }   /* 顶部隐形拖拽把手 */
+  #bubble { position: fixed; top: 26px; left: 50%; transform: translateX(-50%);
+            max-width: 86%; padding: 8px 12px; border-radius: 14px;
+            background: rgba(255,255,255,.94); color: var(--deep); font-size: 14px;
+            display: none; pointer-events: none; box-shadow: 0 2px 10px rgba(0,0,0,.15);
+            z-index: 30; }
+  #menu { position: fixed; top: 40px; right: 12px; display: none; z-index: 20;
+          background: rgba(255,255,255,.97); border-radius: 14px; padding: 6px;
+          min-width: 158px; box-shadow: 0 8px 24px rgba(0,0,0,.18);
+          font-size: 13px; color: var(--deep); backdrop-filter: blur(8px); }
+  .menu-item { display: flex; align-items: center; gap: 9px; padding: 8px 12px;
+               border-radius: 9px; cursor: pointer; transition: background .15s ease; }
+  .menu-item:hover { background: #FFF0F4; }
+  .mi-icon { width: 18px; text-align: center; flex: none; }
+  .mi-hint { margin-left: auto; color: #B9A6AC; font-size: 11px; }
+  .menu-sep { height: 1px; background: #F3E9EC; margin: 5px 10px; }
+  .menu-item.danger { color: #E05A6E; }
+  .menu-item.danger:hover { background: #FFEDF0; }
+  #status { position: fixed; bottom: 4px; left: 0; right: 0; text-align: center;
+            font-size: 11px; color: rgba(74,59,50,.45); display: none; }
+  #walk-overlay { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+                  width: 150px; image-rendering: pixelated; display: none;
+                  pointer-events: none; z-index: 5; }
+</style>
+</head>
+<body>
+  <canvas id="pet"></canvas>
+  <div id="drag-strip" class="pywebview-drag-region"></div>
+  <div id="bubble"></div>
+  <div id="status"></div>
+  <img id="walk-overlay" src="/walk/catwalk_alpha.png" alt="">
+    <div id="menu">
+    <div class="menu-item" id="m-pat"><span class="mi-icon">🐾</span>摸头卖萌</div>
+    <div class="menu-sep"></div>
+    <div class="menu-item" id="m-model"><span class="mi-icon">🦊</span>换模型<span class="mi-hint" id="m-model-hint"></span></div>
+    <div class="menu-item" id="m-top"><span class="mi-icon">📌</span>置顶<span class="mi-hint" id="m-top-hint"></span></div>
+    <div class="menu-item" id="m-big"><span class="mi-icon">➕</span>放大</div>
+    <div class="menu-item" id="m-small"><span class="mi-icon">➖</span>缩小</div>
+    <div class="menu-sep"></div>
+    <div class="menu-item" id="m-stop"><span class="mi-icon">⏹️</span>停止播报</div>
+    <div class="menu-item danger" id="m-exit"><span class="mi-icon">✕</span>退出</div>
+  </div>
+  <script src="/vendor/pixi.min.js"></script>
+  <script src="/vendor/live2dcubismcore.min.js"></script>
+  <script src="/vendor/cubism4.min.js"></script>
+  <script src="/pet.js"></script>
+</body>
+</html>

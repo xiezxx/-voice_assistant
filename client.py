@@ -14,107 +14,45 @@
 import argparse
 import asyncio
 import json
-import os
-import sys
-import tempfile
 
-import numpy as np
-import sounddevice as sd
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-SAMPLE_RATE = 16000
-CHUNK = 1600
-
-
-class PygamePlayer:
-    """mp3 字节 → 临时文件 → 队列顺序播放；stop() 供打断时清空并静音。"""
-
-    def __init__(self):
-        import pygame
-
-        pygame.mixer.pre_init(44100, -16, 2, 512)  # Windows 下 MP3 播放需提前设置
-        pygame.mixer.init()
-        self._q: asyncio.Queue = asyncio.Queue()
-
-    def enqueue(self, mp3: bytes):
-        f = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        f.write(mp3)
-        f.close()
-        self._q.put_nowait(f.name)
-
-    def stop(self):
-        """打断：停止当前播放并清空队列（跨线程调用 SDL stop 广泛安全）。"""
-        import pygame
-
-        pygame.mixer.music.stop()
-        while not self._q.empty():
-            try:
-                os.unlink(self._q.get_nowait())
-            except OSError:
-                pass
-
-    def _play_blocking(self, path: str):
-        import pygame
-
-        try:
-            pygame.mixer.music.load(path)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
-        finally:
-            try:
-                os.unlink(path)  # 播完再删（Windows 文件锁）
-            except OSError:
-                pass
-
-    async def run(self):
-        while True:
-            path = await self._q.get()
-            await asyncio.to_thread(self._play_blocking, path)
-
-
-def make_mic_stream(loop, q: asyncio.Queue) -> sd.InputStream:
-    """麦克风回调线程 → 事件循环队列（float32 → int16 bytes）。"""
-
-    def cb(indata, frames, t, status):
-        pcm = np.clip(np.rint(np.clip(indata, -1, 1) * 32768), -32768, 32767).astype("<i2")
-        loop.call_soon_threadsafe(q.put_nowait, pcm.tobytes())
-
-    return sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=CHUNK, callback=cb
-    )
+from ws_audio import PygamePlayer, make_mic_stream
 
 
 async def recv_loop(ws, player: PygamePlayer):
-    async for msg in ws:
-        if isinstance(msg, bytes):
-            player.enqueue(msg)  # audio 事件后的二进制帧 = 完整 mp3
-            continue
-        try:
-            ev = json.loads(msg)
-        except ValueError:
-            continue
-        t = ev.get("type")
-        if t == "wake":
-            print("\n🔔 唤醒 — 请说话，说完停顿约 1 秒", flush=True)
-        elif t == "transcript" and ev.get("text"):
-            print(f"\n你: {ev['text']}", flush=True)
-        elif t == "sentence":
-            print(ev["text"], end="", flush=True)
-        elif t == "status":
-            text = ev.get("text", "")
-            if text:
-                print(f"\r[{text}]", end="", flush=True)
-        elif t == "barge_in":
-            player.stop()
-            print("\n⏹ 被打断 — 请继续说", flush=True)
-        elif t == "speaker_reject":
-            print("\n🔇 声音不是主人，已忽略", flush=True)
-        elif t == "turn_end":
-            print(f"\n[状态] {ev.get('status', '')}", flush=True)
-        elif t == "error":
-            print(f"\n⚠️ {ev.get('error', '')}", flush=True)
+    try:
+        async for msg in ws:
+            if isinstance(msg, bytes):
+                player.enqueue(msg)  # audio 事件后的二进制帧 = 完整 mp3
+                continue
+            try:
+                ev = json.loads(msg)
+            except ValueError:
+                continue
+            t = ev.get("type")
+            if t == "wake":
+                print("\n🔔 唤醒 — 请说话，说完停顿约 1 秒", flush=True)
+            elif t == "transcript" and ev.get("text"):
+                print(f"\n你: {ev['text']}", flush=True)
+            elif t == "sentence":
+                print(ev["text"], end="", flush=True)
+            elif t == "status":
+                text = ev.get("text", "")
+                if text:
+                    print(f"\r[{text}]", end="", flush=True)
+            elif t == "barge_in":
+                player.stop()
+                print("\n⏹ 被打断 — 请继续说", flush=True)
+            elif t == "speaker_reject":
+                print("\n🔇 声音不是主人，已忽略", flush=True)
+            elif t == "turn_end":
+                print(f"\n[状态] {ev.get('status', '')}", flush=True)
+            elif t == "error":
+                print(f"\n⚠️ {ev.get('error', '')}", flush=True)
+    except ConnectionClosed:
+        pass  # 断开由 run() 主循环负责重连
 
 
 async def keyboard_loop(ws, stop_ev: asyncio.Event):
@@ -153,7 +91,10 @@ async def run(args):
                 async def sender():
                     while True:
                         data = await mic_q.get()
-                        await ws.send(data)
+                        try:
+                            await ws.send(data)
+                        except ConnectionClosed:
+                            return  # 断开由 run() 主循环负责重连
 
                 ptask = asyncio.create_task(player.run())
                 tasks = [
@@ -161,13 +102,16 @@ async def run(args):
                     asyncio.create_task(recv_loop(ws, player)),
                     asyncio.create_task(keyboard_loop(ws, stop_ev)),
                 ]
-                await stop_ev.wait()
+                # 等任一结束：子任务退出 = 连接断开（外层重连）；stop 置位 = 用户退出
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for t in tasks:
-                    t.cancel()
+                    if t not in done:
+                        t.cancel()
                 ptask.cancel()
                 stream.stop()
                 stream.close()
-                break
+                if stop_ev.is_set():
+                    break
         except ConnectionClosed:
             print(f"🔌 连接断开，重连中…（第 {retry + 1} 次）", flush=True)
         except OSError as e:
