@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """语音会话服务端离线测试：帧切分 + VAD 采集 + 打断检测 + 队列折叠 + 播报节奏。"""
 
+import sys
+
+sys.stdout.reconfigure(errors="replace")  # 中文 Windows GBK 控制台打印 ✓ 不崩
+
 import asyncio
 import os
 import tempfile

@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """声纹锁定离线测试：真实 CAM++ 模型加载 + 同人通过 / 静音拒绝。"""
 
+import sys
+
+sys.stdout.reconfigure(errors="replace")  # 中文 Windows GBK 控制台打印 ✓ 不崩
+
 import numpy as np
 
 from speaker import SpeakerVerifier, speaker_available

@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """唤醒词模块测试：唤醒短语匹配 + 模式选择 + sherpa 模型加载（麦克风检测需真机验证）。"""
 
+import sys
+
+sys.stdout.reconfigure(errors="replace")  # 中文 Windows GBK 控制台打印 ✓ 不崩
+
 import numpy as np
 
 from wakeword import (

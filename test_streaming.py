@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """流式 TTS 与打断功能的离线测试（不联网、不发声）。"""
 
+import sys
+
+sys.stdout.reconfigure(errors="replace")  # 中文 Windows GBK 控制台打印 ✓ 不崩
+
 import asyncio
 
 

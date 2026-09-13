@@ -5,6 +5,10 @@ Fake 测试覆盖：ready/hello、唤醒+冷却、完整轮次、说话打断、
 真实集成（需 DeepSeek Key + sherpa 可用 + 联网）：合成语音全流程。
 """
 
+import sys
+
+sys.stdout.reconfigure(errors="replace")  # 中文 Windows GBK 控制台打印 ✓ 不崩
+
 import asyncio
 import json
 import threading

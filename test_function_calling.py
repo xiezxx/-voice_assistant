@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """Function Calling 测试：工具单元测试 + 真实 DeepSeek 集成测试。"""
 
+import sys
+
+sys.stdout.reconfigure(errors="replace")  # 中文 Windows GBK 控制台打印 ✓ 不崩
+
 import asyncio
 import re
 from datetime import datetime, timedelta

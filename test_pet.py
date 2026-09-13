@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """桌面宠物离线测试：状态映射 / UI 桥 / HTML 组装 / client 重构回归（无需 GUI）。"""
 
+import sys
+
+sys.stdout.reconfigure(errors="replace")  # 中文 Windows GBK 控制台打印 ✓ 不崩
+
 import re
 
 import pet as pet_mod                  # pet.py 顶层无重依赖，可无 GUI 导入
