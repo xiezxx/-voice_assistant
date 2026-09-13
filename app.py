@@ -315,9 +315,16 @@ CSS = """
 .status-box textarea { font-family: 'Consolas', monospace; font-size: 13px; }
 #wake-status { font-size: 14px; padding: 8px 12px; border-radius: 8px; background: #f3f4f6; }
 footer { display: none !important; }
+/* 手机：双列改单列，别把界面挤成一团 */
+@media (max-width: 640px) {
+  .gradio-container { max-width: 100% !important; padding: 6px !important; }
+  .gradio-container .row { flex-wrap: wrap !important; }
+  .gradio-container .row > * { min-width: 100% !important; flex: 1 1 100% !important; }
+  #wake-status { font-size: 13px; }
+}
 """
 
-with gr.Blocks() as demo:
+with gr.Blocks(title="小音") as demo:      # title 会进 PWA manifest（"添加到主屏幕"显示的名字）
     gr.Markdown(
         """
         # 🎙️ AI 语音助手 — 小音
@@ -505,13 +512,24 @@ if __name__ == "__main__":
     # 缺 Key 也把界面拉起来（方便先看界面），但不能等用户说第一句话才发现
     if not Config.validate():
         print("\n[提示] 没有 Key 界面仍可打开，但对话会失败；补好 .env 后重启即可。")
-    print(f"\n[就绪] 启动 Web 界面（端口 {_port}）...")
+
+    # 这里保持纯 HTTP：本机的宠物/CLI 客户端走的是 ws://，换成 HTTPS 会把它们打断。
+    # 手机要的 HTTPS 由 phone_server.py 另起一个端口（7861）做 TLS 反向代理转发到本端口。
+    _web = Path(__file__).parent / "web"
+    print(f"\n[就绪] 启动 Web 界面（http://0.0.0.0:{_port}）...")
     demo.launch(
         server_name="0.0.0.0",
         server_port=_port,
         share=False,  # 本地运行不需要公网链接
         theme=THEME,
         css=CSS,
-        head='<script defer src="/wake-static/wake_mode.js"></script>',
+        head=(
+            '<script defer src="/wake-static/wake_mode.js"></script>'
+            # 手机"添加到主屏幕"用：iOS 认 apple-touch-icon，theme-color 决定状态栏配色
+            '<link rel="apple-touch-icon" href="/wake-static/icon.png" />'
+            '<meta name="theme-color" content="#ffe3ea" />'
+        ),
+        pwa=True,                          # 可安装的 PWA（manifest 与图标由 Gradio 生成）
+        favicon_path=str(_web / "icon.png"),
         _app=demo.app,  # 关键：复用 app，保留自定义路由（否则 launch 会重建导致路由丢失）
     )

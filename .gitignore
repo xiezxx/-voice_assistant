@@ -11,3 +11,5 @@ data/
 图片/
 pet_run.log
 nul
+certs/
+web/cert.pem
