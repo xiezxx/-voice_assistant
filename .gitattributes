@@ -1,0 +1,20 @@
+# 行尾统一：文本文件统一 LF（Windows 检出也不抖动，避免 diff 出现整文件行尾翻转）
+* text=auto eol=lf
+
+# 批处理/脚本宿主必须是 CRLF —— cmd.exe 对 LF 换行的 .bat 支持不可靠
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.vbs text eol=crlf
+
+# 二进制：不参与行尾/编码转换，也不做文本 diff
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.mp3  binary
+*.wav  binary
+*.onnx binary
+*.moc3 binary
+*.zip  binary
+*.exe  binary
