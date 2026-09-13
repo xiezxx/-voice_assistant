@@ -525,13 +525,8 @@ def main():
             if hwnd:
                 break
         if hwnd:
+            # 枚举所有「小音」标题窗口加工具窗口样式（不抢焦点 + 藏任务栏，不触碰可见性）
             try:
-                # 方式一：WinForms 原生属性（最可靠）
-                window.native.ShowInTaskbar = False
-            except Exception:
-                pass
-            try:
-                # 方式二：枚举所有「小音」标题窗口设置工具窗口样式（不抢焦点 + 藏任务栏）
                 GWL_EXSTYLE = -20
                 WS_EX_NOACTIVATE = 0x08000000
                 WS_EX_TOOLWINDOW = 0x00000080
@@ -554,11 +549,6 @@ def main():
                     user32.SetWindowLongW(
                         h, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
                     )
-                # 样式重挂：hide/show 让任务栏移除条目
-                time.sleep(0.2)
-                window.hide()
-                time.sleep(0.2)
-                window.show()
             except Exception:
                 pass
 
@@ -570,19 +560,22 @@ def main():
         except Exception as e:
             print(f"[托盘] 启动失败（可用 --no-tray 关闭）: {e}")
 
-    def _transparency_kick():
-        # 页面加载完成后再 hide/show：WebView2 初始化完成，透明才生效
-        time.sleep(0.5)
+    def _on_loaded():
+        # 在 UI 线程内执行：设置任务栏隐藏（跨线程调用会死锁）
         try:
-            window.hide()
+            window.native.ShowInTaskbar = False
+        except Exception as e:
+            print(f"[调试] ShowInTaskbar: {e}", flush=True)
+        # 透明触发：WebView2 初始化完成后再 hide/show（UI 线程内安全）
+        try:
             time.sleep(0.3)
+            window.hide()
+            time.sleep(0.25)
             window.show()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[调试] 透明 kick: {e}", flush=True)
 
-    window.events.loaded += lambda: threading.Thread(
-        target=_transparency_kick, daemon=True
-    ).start()
+    window.events.loaded += _on_loaded
 
     def _on_closing():                         # 主线程事件回调：只置位，不碰窗口 API
         bridge.stop_event.set()
