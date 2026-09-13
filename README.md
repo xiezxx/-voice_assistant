@@ -137,6 +137,43 @@ python client.py --voice zh-CN-YunxiNeural  # 指定音色
 
 按键：`r` 重置对话，`q` 退出；播报中直接说话即可打断。
 
+### 手机使用（HTTPS + 可加到主屏幕）
+
+手机浏览器**只在 HTTPS 下才给网页麦克风权限**（`http://192.168.x.x` 上 `navigator.mediaDevices`
+是 undefined），所以手机端要另走一个 HTTPS 端口。**电脑端完全不受影响**——宠物和 CLI 走的是
+`ws://`，绝不能把主服务改成 HTTPS，所以手机入口是单独一个 TLS 反向代理：
+
+```bash
+python make_cert.py       # 首次：生成带局域网 IP 的自签证书（零依赖，调系统 openssl）
+python app.py             # 电脑端服务（照旧 HTTP 7860，宠物/CLI/浏览器都不变）
+python phone_server.py    # 手机入口（HTTPS 7861，把流量转给 7860）
+```
+
+放行防火墙（管理员权限执行**一次**）：
+
+```
+netsh advfirewall firewall add rule name="小音助手 7861" dir=in action=allow protocol=TCP localport=7861
+```
+
+手机连同一个 WiFi，浏览器打开 `https://<电脑局域网IP>:7861`，然后：
+
+1. 首次会提示证书不受信任（自签证书的正常现象）→ 无视警告继续
+2. 装证书：访问 `https://<IP>:7861/wake-static/cert.pem`
+   - Android：设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书
+   - iPhone：设置 → 通用 → VPN与设备管理 安装，再到 设置 → 通用 → 关于本机 → **证书信任设置**里开启信任
+3. 重新打开页面 → 点「🎙️ 免提唤醒开关」→ 说「小音」
+4. 想当 App 用：浏览器菜单选「添加到主屏幕」（Gradio 已生成 PWA manifest，图标是 `web/icon.png`）
+
+**已知限制**（浏览器层面的，绕不过去）：
+
+- **锁屏/切后台唤不醒**：手机锁屏后浏览器会挂起音频与 WebSocket，回到前台才恢复（代码里已处理恢复时的重连）
+- **自签证书要手动信任**：iPhone 必须在「证书信任设置」里手动开启，否则 `wss://` 会被直接拒绝；
+  自签若在你的手机上仍被拦，退路是用 [mkcert](https://github.com/FiloSottile/mkcert) 签一个受信任的本地 CA
+- **安全**：放行防火墙后同网段其他设备也能访问这个服务（它带着 DeepSeek Key 和聊天记录），
+  建议只在家里网络这么用；不想用了执行
+  `netsh advfirewall firewall delete rule name="小音助手 7861"`
+- 换了网络/IP 变了要重跑 `make_cert.py`（证书里写死了 IP）
+
 ## 本地 KWS 模型
 
 CLI 与 Web 唤醒共用同一套模型：
@@ -285,6 +322,24 @@ voice_assistant/
 | KWS_KEYWORDS_THRESHOLD | 0.25 | 唤醒词检测阈值（越小越灵敏） |
 | SPEAKER_LOCK | 1 | 声纹锁定开关 |
 | SPEAKER_THRESHOLD | 0.6 | 声纹匹配阈值（误拒绝多就调低） |
+
+## 测试
+
+不用 pytest，每个文件都是能直接跑的脚本（`python test_xxx.py`，末尾打印「全部通过 ✅」）：
+
+| 脚本 | 覆盖内容 | 联网 |
+|---|---|---|
+| `test_stt_accuracy.py` | **识别准确率**：TTS 合成典型句子 → 喂 Whisper → 比对原文；断言平均命中率、不许退回繁体 | 要（edge-tts） |
+| `test_voice_ws.py` | WebSocket 全协议（唤醒/打断/声纹/停止）+ 真实全链路 | 部分 |
+| `test_voice_server.py` | 帧切分、VAD 采集、打断检测、队列折叠 | 否 |
+| `test_streaming.py` | 流式 TTS 与打断（不联网不发声） | 否 |
+| `test_function_calling.py` | 工具单元测试 + 真实 DeepSeek 集成 | 部分 |
+| `test_wakeword.py` / `test_speaker.py` | 唤醒词匹配 / 声纹锁定（真实模型） | 否 |
+| `test_pet.py` | 桌宠状态映射、UI 桥、静态服务、配置 | 否 |
+| `test_music.py` | QQ 音乐定位、搜索解析、COM 接口、降级文案 | 部分 |
+
+改识别相关代码（提示词、模型档位、音频处理）后建议跑一遍 `test_stt_accuracy.py` ——
+准确率退化是单测覆盖不到的，只有真实音频能暴露。
 
 ## 后续扩展方向
 
