@@ -342,6 +342,39 @@ def _startup_file() -> Path:
     )
 
 
+def is_autostart_installed() -> bool:
+    return _startup_file().exists()
+
+
+def install_autostart() -> bool:
+    """写开机自启脚本到 Startup 目录，成功返回 True。
+
+    ⚠️ 不能直接复制 start_pet.bat：bat 里全是 %~dp0 相对路径，放进 Startup 目录后
+    %~dp0 指向 Startup 而非项目目录，登录自启会静默失效（找不到 VBS/pet.py）。
+    所以生成一个带绝对路径的包装脚本。
+    """
+    target = _startup_file()
+    project_dir = Path(__file__).parent
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            f'@echo off\ncd /d "{project_dir}"\ncall "{project_dir / "start_pet.bat"}"\n',
+            encoding="gbk",          # cmd 按系统 ANSI 代码页读 bat，中文路径必须 GBK
+        )
+    except OSError:
+        return False
+    return target.exists()
+
+
+def uninstall_autostart() -> bool:
+    """删除开机自启脚本，成功返回 True。"""
+    try:
+        _startup_file().unlink(missing_ok=True)
+    except OSError:
+        return False
+    return not is_autostart_installed()
+
+
 def _make_tray_icon():
     """用 PIL 绘制精致版小音托盘图标：渐变脸 + 猫耳 + 高光眼。"""
     from PIL import Image, ImageDraw, ImageFilter
@@ -408,23 +441,13 @@ def start_tray(window, bridge: "UiBridge"):
             pass
 
     def toggle_autostart(icon, item):
-        target = _startup_file()
-        try:
-            if target.exists():
-                target.unlink(missing_ok=True)
-            else:
-                # 自启脚本放在 Startup 目录，%~dp0 会指向 Startup 而非项目目录，
-                # 所以生成带绝对路径的包装脚本：转项目目录后再调 start_pet.bat
-                project_dir = Path(__file__).parent
-                target.write_text(
-                    f'@echo off\ncd /d "{project_dir}"\ncall "{project_dir / "start_pet.bat"}"\n',
-                    encoding="gbk",
-                )
-        except OSError:
-            pass
+        if is_autostart_installed():
+            uninstall_autostart()
+        else:
+            install_autostart()
 
     def is_autostart(item):
-        return _startup_file().exists()
+        return is_autostart_installed()
 
     def do_exit(icon, item):
         bridge.stop_event.set()
@@ -485,8 +508,6 @@ def start_static_server(port: int = 0) -> tuple:
 
 
 def main():
-    import webview
-
     # WinForms 未处理异常写入日志而非弹窗：宠物窗口在隐藏命令行下运行，
     # 错误弹窗会变成看不见的卡死，写日志可诊断
     try:
@@ -521,7 +542,25 @@ def main():
     parser.add_argument("--y", type=int, default=None)
     parser.add_argument("--no-on-top", action="store_true", help="不置顶")
     parser.add_argument("--no-tray", action="store_true", help="不启用系统托盘")
+    parser.add_argument("--install-autostart", action="store_true", help="设置开机自启后退出")
+    parser.add_argument("--uninstall-autostart", action="store_true", help="取消开机自启后退出")
     args = parser.parse_args()
+
+    # 自启动开关：纯命令行操作，不开窗口（install_autostart.bat 调用同一份实现）
+    if args.install_autostart or args.uninstall_autostart:
+        if args.uninstall_autostart:
+            ok = uninstall_autostart()
+            print("[小音] 已取消开机自启" if ok else "[小音] 取消失败，请检查权限")
+        else:
+            ok = install_autostart()
+            if ok:
+                print(f"[小音] 已设置开机自启：{_startup_file()}")
+                print("[小音] 下次登录 Windows 会自动拉起服务器 + 宠物")
+            else:
+                print("[小音] 设置失败，请检查权限")
+        return
+
+    import webview                          # 自启动开关不需要 GUI，放在参数处理之后
 
     W, H = int(250 * args.scale), int(312 * args.scale)
     screens = webview.screens
