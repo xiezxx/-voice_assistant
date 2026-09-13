@@ -526,13 +526,39 @@ def main():
                 break
         if hwnd:
             try:
+                # 方式一：WinForms 原生属性（最可靠）
+                window.native.ShowInTaskbar = False
+            except Exception:
+                pass
+            try:
+                # 方式二：枚举所有「小音」标题窗口设置工具窗口样式（不抢焦点 + 藏任务栏）
                 GWL_EXSTYLE = -20
-                WS_EX_NOACTIVATE = 0x08000000  # 点击不激活窗口（不抢焦点）
-                WS_EX_TOOLWINDOW = 0x00000080  # 从任务栏/Alt-Tab 隐藏
-                style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                ctypes.windll.user32.SetWindowLongW(
-                    hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                WS_EX_NOACTIVATE = 0x08000000
+                WS_EX_TOOLWINDOW = 0x00000080
+                user32 = ctypes.windll.user32
+                WNDENUMPROC = ctypes.WINFUNCTYPE(
+                    ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p
                 )
+                targets = []
+
+                def _cb(h, lparam):
+                    buf = ctypes.create_unicode_buffer(64)
+                    user32.GetWindowTextW(h, buf, 64)
+                    if buf.value == "小音":
+                        targets.append(h)
+                    return True
+
+                user32.EnumWindows(WNDENUMPROC(_cb), 0)
+                for h in targets:
+                    style = user32.GetWindowLongW(h, GWL_EXSTYLE)
+                    user32.SetWindowLongW(
+                        h, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                    )
+                # 样式重挂：hide/show 让任务栏移除条目
+                time.sleep(0.2)
+                window.hide()
+                time.sleep(0.2)
+                window.show()
             except Exception:
                 pass
 
