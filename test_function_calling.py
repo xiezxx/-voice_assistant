@@ -6,6 +6,10 @@ import re
 from datetime import datetime, timedelta
 
 from tools import (
+    get_lunar_date,
+    add_memo,
+    list_memos,
+    delete_memo,
     calculate,
     get_time,
     get_weather,
@@ -46,7 +50,8 @@ def test_schemas():
     assert names == [
         "get_weather", "get_time", "calculate", "get_exchange_rate",
         "get_air_quality", "get_news", "add_reminder", "list_reminders",
-        "delete_reminder", "get_express_tracking",
+        "delete_reminder", "get_lunar_date", "add_memo", "list_memos",
+        "delete_memo", "get_express_tracking",
     ], names
     print("✓ 工具定义:", names)
 
@@ -126,6 +131,47 @@ def test_reminders():
             pass
 
 
+def test_lunar_date():
+    # 今天：应包含公历/农历/生肖
+    r = get_lunar_date()
+    assert "公历" in r and "农历" in r and "星期" in r, r
+    # 国庆节（公历节日）
+    r = get_lunar_date("2026-10-01")
+    assert "国庆" in r, r
+    # 春节 2026-02-17（农历正月初一）
+    r = get_lunar_date("2026-02-17")
+    assert "春节" in r, r
+    # 坏日期兜底
+    assert "看不懂" in get_lunar_date("明天"), get_lunar_date("明天")
+    print("✓ 农历工具：今天/节日识别/坏日期兜底 ->", get_lunar_date("2026-10-01"))
+
+
+def test_memos():
+    import tempfile
+    import tools
+
+    tmp = tempfile.mkdtemp()
+    tools._MEMOS_FILE = tools._MEMOS_FILE.__class__(tmp) / "memos.json"
+    try:
+        assert "目前没有" in list_memos()
+        r = add_memo("Wifi 密码是 123456")
+        assert r.startswith("已记下"), r
+        assert "已" in add_memo("Wifi 密码是 123456") and "重复" in add_memo("Wifi 密码是 123456")
+        r = list_memos()
+        assert "Wifi" in r and "1." in r, r
+        r = delete_memo(1)
+        assert r.startswith("已删除") and "Wifi" in r, r
+        assert delete_memo(3).startswith("没有第"), delete_memo(3)
+        assert "目前没有" in list_memos()
+    finally:
+        tools._save_memos([])
+        try:
+            tools._MEMOS_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+    print("✓ 备忘录：添加/去重/列出/删除/越界兜底")
+
+
 def test_express_tracking():
     """快递：未配置 Key 时优雅降级 + 公司名映射。"""
     assert _normalize_company("顺丰") == "SF"
@@ -179,6 +225,8 @@ if __name__ == "__main__":
     asyncio.run(test_air_quality())
     asyncio.run(test_news())
     test_reminders()
+    test_lunar_date()
+    test_memos()
     test_express_tracking()
     asyncio.run(test_deepseek_integration())
     print("\n全部通过 ✅")

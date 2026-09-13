@@ -10,4 +10,5 @@ pygame>=2.5.0
 sherpa-onnx>=1.10.0
 pvporcupine>=3.0.0
 websockets>=12.0  # uvicorn WebSocket 支持（Web 免提唤醒音频流）+ WS 集成测试客户端
-pywebview>=6.0  # 桌面 3D 宠物窗口（透明无边框，需 WebView2 运行时，Win11 自带）
+pywebview>=6.0  # 桌面宠物窗口（透明无边框，需 WebView2 运行时，Win11 自带）
+lunar-python>=1.4.7  # 农历/节气/节日本地计算（零网络）

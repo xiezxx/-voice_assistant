@@ -182,6 +182,63 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_lunar_date",
+            "description": (
+                "查询农历日期、节气、节日、生肖干支。"
+                "用户问农历、阴历、今天初几、什么时候过年/中秋、属相时调用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date_str": {
+                        "type": "string",
+                        "description": "日期（YYYY-MM-DD），不填默认今天",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_memo",
+            "description": (
+                "添加备忘录。用户说「记一下」「帮我记住」「备忘录记个」时调用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "备忘录内容"},
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_memos",
+            "description": "列出备忘录。用户问「我的备忘录」「我记过什么」时调用。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_memo",
+            "description": "删除备忘录。用户说「删除第X条备忘录」时调用，index 用 list_memos 返回的序号。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "要删除的备忘录序号（从 1 开始）"},
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_express_tracking",
             "description": (
                 "查询快递物流轨迹。用户问快递到哪了、查物流、查单号时调用。"
@@ -220,6 +277,10 @@ TOOL_DISPLAY = {
     "list_reminders": "查询日程",
     "delete_reminder": "取消提醒",
     "get_express_tracking": "查询快递",
+    "get_lunar_date": "查询农历",
+    "add_memo": "记录备忘",
+    "list_memos": "查询备忘",
+    "delete_memo": "删除备忘",
 }
 
 
@@ -258,6 +319,14 @@ async def execute_tool(name: str, arguments_json: str) -> str:
             return await get_express_tracking(
                 str(args.get("company", "")), str(args.get("tracking_no", ""))
             )
+        if name == "get_lunar_date":
+            return get_lunar_date(str(args.get("date_str", "")))
+        if name == "add_memo":
+            return add_memo(str(args.get("content", "")))
+        if name == "list_memos":
+            return list_memos()
+        if name == "delete_memo":
+            return delete_memo(args.get("index"))
     except Exception as e:
         return f"工具执行失败: {e}"
     return f"未知工具: {name}"
@@ -566,6 +635,99 @@ def get_due_reminders_text() -> str:
     _save_reminders(items)
     lines = "\n".join(f"- {i['time']} {i['content']}" for i in due)
     return "【日程提醒】以下提醒时间已到，请在回复开头自然、简短地提醒用户：\n" + lines
+
+
+# ── 农历/节日（lunar-python 本地库，零网络）───────────────────
+
+def get_lunar_date(date_str: str = "") -> str:
+    """公历 ↔ 农历日期、星期、节气、节日、生肖干支（本地计算）。"""
+    from lunar_python import Solar
+
+    text = (date_str or "").strip()
+    if not text or text in ("今天", "现在"):
+        s = Solar.fromDate(datetime.now())
+    else:
+        text = text.replace("/", "-").replace("年", "-").replace("月", "-").replace("日", "")
+        try:
+            y, m, d = [int(x) for x in text.split("-")[:3]]
+            s = Solar.fromYmd(y, m, d)
+        except (ValueError, TypeError):
+            return f"日期「{date_str}」看不懂，请用 YYYY-MM-DD 格式，例如 2026-10-01"
+    l = s.getLunar()
+    parts = [
+        f"公历 {s.getYear()}年{s.getMonth()}月{s.getDay()}日 星期{s.getWeekInChinese()}",
+        f"农历 {l.toString()}（{l.getYearShengXiao()}年 {l.getYearInGanZhi()}）",
+    ]
+    jieqi = l.getJieQi()
+    if jieqi:
+        parts.append(f"今日节气：{jieqi}")
+    else:
+        nxt = l.getNextJieQi(True)
+        if nxt:
+            parts.append(f"下一个节气：{nxt.getName()}（{nxt.getSolar().toYmd()}）")
+    festivals = list(s.getFestivals()) + list(l.getFestivals())
+    if festivals:
+        parts.append("节日：" + "、".join(festivals))
+    return "；".join(parts)
+
+
+# ── 备忘录（本地 JSON 持久化，无需联网）───────────────────────
+
+_MEMOS_FILE = Path(__file__).parent / "data" / "memos.json"
+
+
+def _load_memos() -> list:
+    try:
+        data = json.loads(_MEMOS_FILE.read_text(encoding="utf-8"))
+        return [m for m in data if isinstance(m, dict) and m.get("content")]
+    except (OSError, ValueError):
+        return []
+
+
+def _save_memos(items: list):
+    try:
+        _MEMOS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _MEMOS_FILE.write_text(
+            json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def add_memo(content: str) -> str:
+    """添加备忘录。"""
+    content = (content or "").strip()
+    if not content:
+        return "请告诉我备忘录内容，例如：记一下 Wifi 密码是 123456"
+    items = _load_memos()
+    if any(m["content"] == content for m in items):
+        return f"备忘录里已有「{content}」，无需重复"
+    items.append({"content": content})
+    _save_memos(items)
+    return f"已记下：「{content}」"
+
+
+def list_memos() -> str:
+    """列出备忘录。"""
+    items = _load_memos()
+    if not items:
+        return "你目前没有备忘录"
+    lines = [f"{i + 1}. {m['content']}" for i, m in enumerate(items)]
+    return "你的备忘录：" + "；".join(lines)
+
+
+def delete_memo(index) -> str:
+    """按序号删除备忘录。"""
+    try:
+        idx = int(index) - 1
+    except (TypeError, ValueError):
+        return "请告诉我要删除第几条备忘录，例如：删除第一条备忘录"
+    items = _load_memos()
+    if idx < 0 or idx >= len(items):
+        return f"没有第 {idx + 1} 条备忘录（当前共 {len(items)} 条）"
+    removed = items.pop(idx)
+    _save_memos(items)
+    return f"已删除备忘录：「{removed['content']}」"
 
 
 # ── 快递查询（快递鸟，需免费 Key，未配置时优雅降级）────────────
