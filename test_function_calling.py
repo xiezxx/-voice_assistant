@@ -55,7 +55,7 @@ def test_schemas():
         "get_weather", "get_time", "calculate", "get_exchange_rate",
         "get_air_quality", "get_news", "add_reminder", "list_reminders",
         "delete_reminder", "get_lunar_date", "add_memo", "list_memos",
-        "delete_memo", "get_express_tracking",
+        "delete_memo", "get_express_tracking", "play_music", "control_music",
     ], names
     print("✓ 工具定义:", names)
 

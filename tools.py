@@ -263,6 +263,49 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_music",
+            "description": (
+                "用 QQ 音乐播放指定歌曲。用户说「放首歌」「放首《晴天》」"
+                "「我想听周杰伦的稻香」「来一首XXX」这类点歌、听歌请求时调用。"
+                "只传歌名，不要带书名号。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "song": {
+                        "type": "string",
+                        "description": "歌曲名，可以带上歌手，例如：晴天、晴天 周杰伦",
+                    },
+                },
+                "required": ["song"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "control_music",
+            "description": (
+                "控制 QQ 音乐的播放状态：暂停、继续、下一首、上一首。"
+                "用户说「暂停」「别放了」「继续」「下一首」「换一首」「切歌」「上一首」时调用。"
+                "调音量不要调用本工具，本工具不支持音量。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["pause", "resume", "next", "prev"],
+                        "description": "pause=暂停，resume=继续，next=下一首，prev=上一首",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 # 工具名 → 界面展示名（用于状态栏提示）
@@ -281,6 +324,8 @@ TOOL_DISPLAY = {
     "add_memo": "记录备忘",
     "list_memos": "查询备忘",
     "delete_memo": "删除备忘",
+    "play_music": "用QQ音乐放歌",
+    "control_music": "控制音乐播放",
 }
 
 
@@ -327,6 +372,15 @@ async def execute_tool(name: str, arguments_json: str) -> str:
             return list_memos()
         if name == "delete_memo":
             return delete_memo(args.get("index"))
+        if name == "play_music":
+            from music import play_song
+
+            # 点歌要拉起客户端并操作界面（秒级阻塞），不能卡住事件循环
+            return await asyncio.to_thread(play_song, str(args.get("song", "")))
+        if name == "control_music":
+            from music import media_action
+
+            return media_action(str(args.get("action", "")))
     except Exception as e:
         return f"工具执行失败: {e}"
     return f"未知工具: {name}"
