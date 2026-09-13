@@ -18,6 +18,7 @@
 import argparse
 import asyncio
 import json
+import os
 import queue
 import threading
 import time
@@ -318,6 +319,92 @@ async def ws_main(bridge: UiBridge, args):
 
 # ── 静态文件服务器（Live2D 模型/纹理需经 HTTP 正常加载）────
 
+# ── 系统托盘驻留（pystray，独立线程）────────────────────────
+
+def _startup_file() -> Path:
+    return (
+        Path(os.environ.get("APPDATA", ""))
+        / "Microsoft/Windows/Start Menu/Programs/Startup"
+        / "小音宠物.bat"
+    )
+
+
+def _make_tray_icon():
+    """用 PIL 画一个粉色圆脸小音图标。"""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse([4, 4, 60, 60], fill=(255, 211, 220, 255))      # 圆脸
+    d.ellipse([18, 22, 26, 34], fill=(74, 59, 50, 255))       # 左眼
+    d.ellipse([38, 22, 46, 34], fill=(74, 59, 50, 255))       # 右眼
+    d.ellipse([22, 44, 42, 52], fill=(255, 183, 200, 255))    # 腮红
+    d.arc([28, 38, 36, 48], 20, 160, fill=(74, 59, 50, 255), width=2)  # 嘴
+    return img
+
+
+def start_tray(window, bridge: "UiBridge"):
+    """托盘常驻：显示/隐藏、换模型、开机自启开关、退出。run_detached 独立线程。"""
+    import shutil
+
+    import pystray
+
+    def toggle_show(icon, item):
+        try:
+            if window.hidden:
+                window.show()
+            else:
+                window.hide()
+        except Exception:
+            pass
+
+    def do_switch_model(icon, item):
+        cfg = _load_pet_config()
+        current = str(cfg.get("model", "senko"))
+        if current not in _MODEL_NAMES:
+            current = "senko"
+        nxt = _MODEL_NAMES[(_MODEL_NAMES.index(current) + 1) % len(_MODEL_NAMES)]
+        cfg["model"] = nxt
+        _save_pet_config(cfg)
+        page = dict((m[0], m[1]) for m in _PET_MODELS)[nxt]
+        try:
+            _GLOBALS["window"].load_url(_GLOBALS["base_url"] + f"/{page}?model={nxt}")
+        except Exception:
+            pass
+
+    def toggle_autostart(icon, item):
+        target = _startup_file()
+        try:
+            if target.exists():
+                target.unlink(missing_ok=True)
+            else:
+                shutil.copyfile(Path(__file__).parent / "start_pet.bat", target)
+        except OSError:
+            pass
+
+    def is_autostart(item):
+        return _startup_file().exists()
+
+    def do_exit(icon, item):
+        bridge.stop_event.set()
+        try:
+            window.destroy()
+        except Exception:
+            pass
+        icon.stop()
+
+    menu = pystray.Menu(
+        pystray.MenuItem("显示 / 隐藏宠物", toggle_show, default=True),
+        pystray.MenuItem("换模型", do_switch_model),
+        pystray.MenuItem("开机自启动", toggle_autostart, checked=is_autostart),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("退出", do_exit),
+    )
+    tray = pystray.Icon("小音", _make_tray_icon(), "小音", menu)
+    tray.run_detached()
+    _GLOBALS["tray"] = tray
+
+
 def start_static_server(port: int = 0) -> tuple:
     """在本机起一个仅监听 127.0.0.1 的静态服务器（线程内运行），返回 (server, base_url)。"""
     import functools
@@ -347,6 +434,7 @@ def main():
     parser.add_argument("--x", type=int, default=None, help="窗口 X（默认右下角）")
     parser.add_argument("--y", type=int, default=None)
     parser.add_argument("--no-on-top", action="store_true", help="不置顶")
+    parser.add_argument("--no-tray", action="store_true", help="不启用系统托盘")
     args = parser.parse_args()
 
     W, H = int(250 * args.scale), int(312 * args.scale)
@@ -407,6 +495,12 @@ def main():
                 pass
 
     threading.Thread(target=_win_tweaks, daemon=True).start()
+
+    if not args.no_tray:
+        try:
+            start_tray(window, bridge)   # 托盘常驻（独立线程）
+        except Exception as e:
+            print(f"[托盘] 启动失败（可用 --no-tray 关闭）: {e}")
 
     def _transparency_kick():
         # 页面加载完成后再 hide/show：WebView2 初始化完成，透明才生效
