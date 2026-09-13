@@ -125,16 +125,6 @@ function initPixi() {
         m.anchor.set(0.5, 0.5);
         baseY = window.innerHeight * 0.55;
         m.position.set(window.innerWidth / 2, baseY);
-        if (MODEL_NAME === "hijiki") {
-          const cm = new PIXI.ColorMatrixFilter();
-          cm.matrix = [
-            1, 0, 0, 0, 0.10,
-            0, 1, 0, 0, 0.14,
-            0, 0, 1, 0, 0.40,
-            0, 0, 0, 1, 0,
-          ];
-          m.filters = [cm];
-        }
         app.stage.addChild(m);
         initSparks();
         applyScale();
