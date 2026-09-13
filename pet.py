@@ -25,12 +25,17 @@ import threading
 import time
 from pathlib import Path
 
-# pythonw（双击 bat 启动）无控制台：print 重定向到日志，避免崩溃
-if sys.stdout is None:
-    sys.stdout = open(
+# pythonw（双击 bat 启动）无控制台：stdout/stderr 重定向到日志。
+# stderr 也必须处理——http.server 等库写 stderr，None 会导致响应截断/卡死
+if sys.stdout is None or sys.stderr is None:
+    _log = open(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "pet_run.log"),
         "a", encoding="utf-8",
     )
+    if sys.stdout is None:
+        sys.stdout = _log
+    if sys.stderr is None:
+        sys.stderr = _log
 
 PET_DIR = Path(__file__).parent / "web" / "pet"
 
@@ -375,8 +380,6 @@ def _make_tray_icon():
 
 def start_tray(window, bridge: "UiBridge"):
     """托盘常驻：显示/隐藏、换模型、开机自启开关、退出。run_detached 独立线程。"""
-    import shutil
-
     import pystray
 
     def toggle_show(icon, item):
@@ -410,7 +413,13 @@ def start_tray(window, bridge: "UiBridge"):
             if target.exists():
                 target.unlink(missing_ok=True)
             else:
-                shutil.copyfile(Path(__file__).parent / "start_pet.bat", target)
+                # 自启脚本放在 Startup 目录，%~dp0 会指向 Startup 而非项目目录，
+                # 所以生成带绝对路径的包装脚本：转项目目录后再调 start_pet.bat
+                project_dir = Path(__file__).parent
+                target.write_text(
+                    f'@echo off\ncd /d "{project_dir}"\ncall "{project_dir / "start_pet.bat"}"\n',
+                    encoding="gbk",
+                )
         except OSError:
             pass
 
@@ -453,11 +462,21 @@ def start_static_server(port: int = 0) -> tuple:
     import http.server
 
     class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
-        """禁用缓存：避免 WebView2 加载旧版页面（页面迭代频繁）。"""
+        """禁用缓存 + 强制刷新请求日志（pythonw 下诊断模型加载问题）。"""
 
         def end_headers(self):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             super().end_headers()
+
+        def log_message(self, fmt, *args):
+            try:
+                sys.stderr.write(
+                    "%s - - [%s] %s\n"
+                    % (self.address_string(), self.log_date_time_string(), fmt % args)
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
 
     handler = functools.partial(_NoCacheHandler, directory=str(PET_DIR))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
@@ -467,6 +486,31 @@ def start_static_server(port: int = 0) -> tuple:
 
 def main():
     import webview
+
+    # WinForms 未处理异常写入日志而非弹窗：宠物窗口在隐藏命令行下运行，
+    # 错误弹窗会变成看不见的卡死，写日志可诊断
+    try:
+        import clr
+
+        clr.AddReference("System.Windows.Forms")
+        import System
+
+        def _log_net_exc(sender, e):
+            with open(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "pet_net_err.log"),
+                "a", encoding="utf-8",
+            ) as f:
+                f.write(
+                    "\n===== WinForms 未处理异常 =====\n"
+                    + (e.Exception.ToString() if e.Exception else "(无详情)")
+                    + "\n"
+                )
+
+        System.Windows.Forms.Application.add_ThreadException(
+            System.Threading.ThreadExceptionEventHandler(_log_net_exc)
+        )
+    except Exception as ex:
+        print(f"[诊断] .NET 异常日志安装失败: {ex}")
 
     parser = argparse.ArgumentParser(description="小音桌面宠物（连接语音助手服务器）")
     parser.add_argument("--host", default="127.0.0.1", help="服务器地址")
@@ -511,48 +555,6 @@ def main():
 
     threading.Thread(target=lambda: asyncio.run(ws_main(bridge, args)), daemon=True).start()
 
-    def _win_tweaks():
-        """窗口级调优：透明触发 + 不抢焦点（挂件化）。"""
-        import ctypes
-
-        hwnd = 0
-        for _ in range(60):                    # 轮询直到窗口创建
-            time.sleep(0.2)
-            try:
-                hwnd = ctypes.windll.user32.FindWindowW(None, "小音")
-            except Exception:
-                pass
-            if hwnd:
-                break
-        if hwnd:
-            # 枚举所有「小音」标题窗口加工具窗口样式（不抢焦点 + 藏任务栏，不触碰可见性）
-            try:
-                GWL_EXSTYLE = -20
-                WS_EX_NOACTIVATE = 0x08000000
-                WS_EX_TOOLWINDOW = 0x00000080
-                user32 = ctypes.windll.user32
-                WNDENUMPROC = ctypes.WINFUNCTYPE(
-                    ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p
-                )
-                targets = []
-
-                def _cb(h, lparam):
-                    buf = ctypes.create_unicode_buffer(64)
-                    user32.GetWindowTextW(h, buf, 64)
-                    if buf.value == "小音":
-                        targets.append(h)
-                    return True
-
-                user32.EnumWindows(WNDENUMPROC(_cb), 0)
-                for h in targets:
-                    style = user32.GetWindowLongW(h, GWL_EXSTYLE)
-                    user32.SetWindowLongW(
-                        h, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
-                    )
-            except Exception:
-                pass
-
-    threading.Thread(target=_win_tweaks, daemon=True).start()
 
     if not args.no_tray:
         try:
@@ -561,11 +563,33 @@ def main():
             print(f"[托盘] 启动失败（可用 --no-tray 关闭）: {e}")
 
     def _on_loaded():
-        # 在 UI 线程内执行：设置任务栏隐藏（跨线程调用会死锁）
+        # 在 UI 线程内执行窗口级调优。
+        # ⚠️ 不能用 window.native.ShowInTaskbar=False：WinForms 会 RecreateHandle，
+        #    WebView2 被销毁，页面冻结在「模型加载中」白屏（ef18914 的死锁是同一根因）。
+        #    也不能从其他线程 SetWindowLongW：会触发 CoreWebView2Controller 跨线程异常。
+        #    这里在 UI 线程直接改扩展样式：
+        #      WS_EX_TOOLWINDOW  藏任务栏 + 不进 Alt+Tab
+        #      WS_EX_NOACTIVATE  点击不抢焦点
+        #      ⚠️ 必须同时清掉 WS_EX_APPWINDOW（WinForms 默认加上的 0x40000）——
+        #         它会强制任务栏按钮，把 TOOLWINDOW 的效果盖掉：表现为启动时没按钮，
+        #         但托盘点一次「显示/隐藏」（hide/show）后按钮就冒出来（实测复现）。
         try:
-            window.native.ShowInTaskbar = False
+            import ctypes
+
+            GWL_EXSTYLE = -20
+            WS_EX_APPWINDOW = 0x00040000
+            WS_EX_NOACTIVATE = 0x08000000
+            WS_EX_TOOLWINDOW = 0x00000080
+            user32 = ctypes.windll.user32
+            hwnd = window.native.Handle.ToInt32()
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            new_style = (
+                (style & ~WS_EX_APPWINDOW) | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+            )
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+            print(f"[调试] 窗口样式 0x{style:08X} -> 0x{new_style:08X}", flush=True)
         except Exception as e:
-            print(f"[调试] ShowInTaskbar: {e}", flush=True)
+            print(f"[调试] 窗口样式: {e}", flush=True)
         # 透明触发：WebView2 初始化完成后再 hide/show（UI 线程内安全）
         try:
             time.sleep(0.3)
