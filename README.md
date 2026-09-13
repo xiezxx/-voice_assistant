@@ -93,6 +93,11 @@ python pet.py --scale 1.2          # 缩放窗口
 python pet.py --no-on-top          # 不置顶
 ```
 
+**一键启动 / 开机自启**：
+
+- `双击 start_pet.bat`：自动检查并启动服务器（最小化窗口）+ 启动宠物（无控制台窗口）
+- `双击 install_autostart.bat`：设置**开机自启动**（登录 Windows 自动拉起服务器+宠物）；`uninstall_autostart.bat` 取消
+
 **三个模型**（右键「换模型」循环切换，选择会记住）：仙狐精灵 Senko / 黑猫精灵 Hijiki / Pio 小精灵。
 
 | 操作 | 效果 |
