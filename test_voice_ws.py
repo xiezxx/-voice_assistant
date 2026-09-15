@@ -96,12 +96,13 @@ class EmptySTT(FakeSTT):
 
 
 class FakeSpeaker:
-    """声纹锁定 Fake：嵌入 = 音频平均电平；匹配 = 电平差 < threshold（0.2）。
+    """声纹锁定 Fake：嵌入 = 音频平均电平；相似度 = 1 - 电平差，阈值同真实现（0.6）。
 
-    用电平 0.5 的帧当「主人」，0.05 的帧当「别人」。
+    用电平 0.5 的帧当「主人」，0.05 的帧当「别人」：
+    主人自己比 = 1.0（过），换个人 = 1 - 0.45 = 0.55（拒）。
     """
 
-    threshold = 0.2
+    threshold = 0.6
 
     class _Manager:
         def __init__(self):
@@ -124,6 +125,15 @@ class FakeSpeaker:
 
     def verify(self, manager, samples):
         return bool(manager.search(self.extract(samples), self.threshold))
+
+    # 真实现里 embed 会先掐静音、similarity 算余弦；这里用不上音频内容，
+    # 直接按"平均音量"当声纹，方便造出"主人/他人"两种特征
+    def embed(self, samples):
+        return self.extract(samples)
+
+    @staticmethod
+    def similarity(a, b):
+        return 1.0 - abs(float(a[0]) - float(b[0]))
 
 
 def _make_deps(bot=None, kws=None, stt=None, speaker=None):
@@ -296,6 +306,76 @@ async def _test_full_turn():
     finally:
         _stop_server(server, thread)
     print("✓ 完整轮次：唤醒→话语→transcript→逐句 sentence+mp3→turn_end→队列快照")
+
+
+async def _drain_until_turn_end(ws, timeout=10.0):
+    """收消息直到 turn_end（跳过 mp3 与中间事件）。"""
+    while True:
+        msg = await _expect(ws, timeout=timeout)
+        if isinstance(msg, dict) and msg["type"] == "turn_end":
+            return msg
+
+
+async def _test_continuous_mode():
+    """连续对话：回复完不发唤醒词就能接着说；静默超时后自动退出。"""
+    deps = _make_deps()
+    server, thread = _run_server(deps)
+    old_timeout = voice_server.CONTINUOUS_TIMEOUT
+    voice_server.CONTINUOUS_TIMEOUT = 1.5          # 测试里别真等 10 秒
+    try:
+        async with await _connect() as ws:
+            await _expect(ws)                                        # ready
+            await ws.send(json.dumps({"type": "continuous", "enabled": True}))
+            ack = await _expect(ws)
+            assert ack == {"type": "continuous", "enabled": True}, ack
+
+            await ws.send(_frame(0.1))                               # 唤醒
+            assert (await _expect(ws))["type"] == "wake"
+            await _send_speech(ws)                                   # 第一轮
+            assert (await _expect_transcript(ws))["text"] == "现在几点"
+            await _drain_until_turn_end(ws)
+
+            # 关键：不发唤醒词，直接说第二句
+            await _send_speech(ws)
+            assert (await _expect_transcript(ws))["text"] == "现在几点"
+            await _drain_until_turn_end(ws)
+
+            # 之后一直不说话 → 应收到"连续对话结束"并回待机
+            ended = False
+            for _ in range(12):
+                msg = await _expect(ws, timeout=8.0)
+                if (isinstance(msg, dict) and msg["type"] == "status"
+                        and "连续对话结束" in msg.get("text", "")):
+                    ended = True
+                    break
+            assert ended, "静默超时后没收到连续对话结束提示"
+    finally:
+        voice_server.CONTINUOUS_TIMEOUT = old_timeout
+        _stop_server(server, thread)
+    print("✓ 连续对话：免唤醒连问 + 静默超时自动退出")
+
+
+async def _test_continuous_off():
+    """默认（开关关）：回复完再说话不会被续听，保持原行为。
+
+    用永不自触发的假 KWS，这样"不唤醒就说话"不会因为假唤醒而干扰断言。
+    """
+    deps = _make_deps(kws=FakeKws(fire_on=(10 ** 9,)))
+    server, thread = _run_server(deps)
+    try:
+        async with await _connect() as ws:
+            await _expect(ws)                                        # ready
+            await ws.send(json.dumps({"type": "listen"}))            # 点击聆听，绕开唤醒词
+            assert (await _expect(ws))["type"] == "wake"
+            await _send_speech(ws)
+            assert (await _expect_transcript(ws))["text"] == "现在几点"
+            await _drain_until_turn_end(ws)
+
+            await _send_speech(ws)                                   # 不再唤醒直接说话
+            await _expect_silence(ws, timeout=1.5)                   # 应该毫无反应
+    finally:
+        _stop_server(server, thread)
+    print("✓ 未开连续对话：回复完不再免唤醒续听（原行为不变）")
 
 
 async def _test_barge_in():
@@ -587,6 +667,8 @@ def main():
     asyncio.run(_test_cooldown_rearm())
     asyncio.run(_test_full_turn())
     asyncio.run(_test_barge_in())
+    asyncio.run(_test_continuous_mode())
+    asyncio.run(_test_continuous_off())
     asyncio.run(_test_text_control())
     asyncio.run(_test_stop_control())
     asyncio.run(_test_empty_stt_feedback())

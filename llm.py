@@ -160,7 +160,14 @@ class ChatBot:
         return Config.SYSTEM_PROMPT + (("\n\n" + reminder) if reminder else "")
 
     def _build_messages(self) -> list[dict]:
-        """构建 API 消息列表：过滤无效消息，剔除工具结果缺失的残缺调用。"""
+        """构建 API 消息列表：过滤无效消息，并把工具调用整组配平。
+
+        工具调用必须是「assistant(tool_calls) 紧跟它要的那些 tool 结果」这样成对的，
+        否则 DeepSeek 直接 400。而 {@code conversation[-30:]} 是从中间截断的，两种残组都会出现：
+        窗口正好从一条 tool 消息开始（孤儿 tool）、或 assistant 的调用被截断在窗口外。
+        所以这里按顺序走一遍，凑不齐的整组一起丢掉 —— 不然一旦畸形就是**永久**失败：
+        400 → 回滚 → 上下文原样 → 下次还是同一条消息打头 → 再 400。
+        """
         messages = []
         for msg in self.conversation[-30:]:
             role = msg.get("role", "")
@@ -176,12 +183,22 @@ class ChatBot:
                 item["tool_call_id"] = msg.get("tool_call_id", "")
             messages.append(item)
 
-        # 若 assistant 的工具调用缺少对应 tool 结果（如被打断），丢弃该调用防止 API 报错
-        tool_ids = {m["tool_call_id"] for m in messages if m["role"] == "tool"}
-        cleaned = []
+        out: list[dict] = []
+        group_at = -1            # 当前这组工具调用在 out 里的起点
+        expected: list[str] = []  # 还等着哪些 tool_call_id
         for m in messages:
+            if m["role"] == "tool":
+                if expected and m["tool_call_id"] == expected[0]:
+                    expected.pop(0)
+                    out.append(m)
+                continue                      # 没轮到它 → 孤儿，丢掉
+            if expected:                      # 上一组没凑齐就来了别的消息 → 整组作废
+                del out[group_at:]
+                expected = []
+            out.append(m)
             if m["role"] == "assistant" and m.get("tool_calls"):
-                if not all(tc["id"] in tool_ids for tc in m["tool_calls"]):
-                    continue
-            cleaned.append(m)
-        return cleaned
+                expected = [tc["id"] for tc in m["tool_calls"]]
+                group_at = len(out) - 1
+        if expected:                          # 结尾还欠着 tool 结果 → 整组作废
+            del out[group_at:]
+        return out
