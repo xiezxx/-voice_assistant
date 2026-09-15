@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 一套克制的紫色调：主色给"聆听中"，橙/蓝给思考和播报，灰给未启动 -->
+    <color name="bg">#F6F5FA</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="primary">#6C4AB6</color>
+    <color name="primary_dark">#553A93</color>
+    <color name="text">#1E1B24</color>
+    <color name="text_dim">#6E6A78</color>
+
+    <!-- 状态球的颜色（MainActivity 按状态取用） -->
+    <color name="orb_off">#B9B5C4</color>
+    <color name="orb_idle">#6C4AB6</color>
+    <color name="orb_wake">#2FA36B</color>
+    <color name="orb_think">#E0A030</color>
+    <color name="orb_speak">#3B82D6</color>
+    <color name="orb_error">#D24B4B</color>
+
+    <color name="bubble_ai">#FFFFFF</color>
+    <color name="bubble_me">#6C4AB6</color>
+</resources>

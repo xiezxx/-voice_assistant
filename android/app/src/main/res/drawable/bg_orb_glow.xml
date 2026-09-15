@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 状态球外面那圈光晕：从中心向外淡出，代码改 alpha 做"呼吸" -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <gradient
+        android:type="radial"
+        android:gradientRadius="50%"
+        android:startColor="#66FFFFFF"
+        android:endColor="#00FFFFFF" />
+</shape>

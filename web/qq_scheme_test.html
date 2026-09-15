@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQ音乐唤起测试</title>
+<style>
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; margin: 0; padding: 18px;
+         background: #f7f7f9; color: #222; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p.hint { color: #666; font-size: 14px; line-height: 1.6; margin: 6px 0 18px; }
+  .case { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 12px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .case h2 { font-size: 15px; margin: 0 0 4px; }
+  .case .why { color: #888; font-size: 13px; margin: 0 0 10px; }
+  a.btn { display: block; text-align: center; padding: 14px; border-radius: 10px;
+          background: #07c160; color: #fff; text-decoration: none; font-size: 16px;
+          font-weight: 600; }
+  a.btn:active { opacity: .8; }
+  .note { font-size: 13px; color: #666; line-height: 1.7; background: #fffbe6;
+          border: 1px solid #ffe58f; border-radius: 10px; padding: 12px; margin-top: 6px; }
+  code { background: #f0f0f2; padding: 1px 4px; border-radius: 4px; font-size: 12px;
+         word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>QQ 音乐唤起测试</h1>
+  <p class="hint">
+    依次点下面的按钮，看手机上会发生什么。每个都试一下，然后告诉我哪一个（或哪几个）
+    能弹出 QQ 音乐并播放《晴天》。
+  </p>
+
+  <div class="case">
+    <h2>① 只唤起，不带歌</h2>
+    <p class="why">先确认你的 QQ 音乐注册了 <code>qqmusic://</code> 这个协议</p>
+    <a class="btn" href="qqmusic://">打开 QQ 音乐</a>
+  </div>
+
+  <div class="case">
+    <h2>② 播放《晴天》（对象格式）</h2>
+    <p class="why">网上 iOS 捷径用的格式：<code>song:[{songmid}]</code></p>
+    <a class="btn" href='qqmusic://qq.com/media/playSonglist?p=%7B%22song%22%3A%5B%7B%22songmid%22%3A%220039MnYb0qxYhV%22%7D%5D%2C%22action%22%3A%22play%22%7D'>播放《晴天》</a>
+  </div>
+
+  <div class="case">
+    <h2>③ 播放《晴天》（数组格式）</h2>
+    <p class="why">另一种流传的格式：<code>song:[[type,songmid]]</code></p>
+    <a class="btn" href='qqmusic://qq.com/media/playSonglist?p=%7B%22song%22%3A%5B%5B%22type%22%3A%220%22%2C%22songmid%22%3A%220039MnYb0qxYhV%22%5D%5D%2C%22action%22%3A%22play%22%7D'>播放《晴天》</a>
+  </div>
+
+  <div class="case">
+    <h2>④ 打开歌曲详情页（备用）</h2>
+    <p class="why">如果 ②③ 都不行，看这条网页版详情页能否在 App 里打开</p>
+    <a class="btn" href="https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV">打开《晴天》详情页</a>
+  </div>
+
+  <div class="note">
+    <b>可能的现象</b>：<br>
+    · 弹出"是否打开 QQ 音乐？"→ 选打开 → 这是<b>成功</b>的（浏览器每次都会问）<br>
+    · 只打开了 App 但停在首页/自己的歌单 → 说明协议认了但歌曲参数有问题<br>
+    · 完全没反应 / 报错"无法打开" → 这个格式不认，我们换方案<br>
+    <br>
+    试完把每条的结果告诉我（比如"① 弹窗打开了 App，② 没反应"）。
+  </div>
+</body>
+</html>

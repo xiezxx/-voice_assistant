@@ -16,6 +16,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -28,12 +29,15 @@ from config import Config
 from conversation_store import save_conversation, clear_conversation
 from speech_utils import sentence_stream
 
+logger = logging.getLogger("voice")
+
 WS_PATH = "/ws/assistant"
 SAMPLE_RATE = 16000
 CHUNK = 1600                      # 每块样本数（0.1s）
 FRAME_BYTES = CHUNK * 2           # int16 单声道
 MAX_BUFFER_BYTES = 100_000        # 异常客户端缓冲上限
 KWS_COOLDOWN_SEC = 5.0            # 单连接唤醒冷却
+ADAPT_THRESHOLD = 0.75            # 声纹相似度高于此值时，把本次并进声纹中心（自适应更新）
 VAD_THRESHOLD = Config.VAD_THRESHOLD        # 能量门阈值（对齐 audio_utils.py）
 UTTERANCE_SILENCE_SEC = Config.SILENCE_DURATION  # 尾静音判定（.env 可调）
 UTTERANCE_MIN_SEC = 0.3           # 最短有效话语
@@ -41,6 +45,7 @@ UTTERANCE_MAX_SEC = 12.0          # 最长录制
 BARGE_STREAK = 3                  # 连续 0.3s 有语音判定打断
 SEND_TIMEOUT = 10.0               # 单条消息发送超时（背压保护，超时中止轮次）
 LISTEN_NO_SPEECH_TIMEOUT = 15.0   # 唤醒后一直没听到声音：超时提示并回待机
+CONTINUOUS_TIMEOUT = Config.CONTINUOUS_TIMEOUT  # 连续对话：回复完后等下一句的秒数（.env 可调）
 
 
 class _SendAborted(Exception):
@@ -94,6 +99,19 @@ def pop_latest_turn(queue) -> Optional[dict]:
 def should_advance(ready_at: float, now: float, paused: bool) -> bool:
     """纯函数：上一句播放窗口已过且未暂停 → 可播下一句。便于离线测试。"""
     return (not paused) and now >= ready_at
+
+
+def should_follow_up(continuous: bool, result: str) -> bool:
+    """纯函数：这一轮结束后要不要免唤醒继续听下一句。
+
+    - 「被用户打断」（barged）后继续听是**既有行为**，与连续模式开关无关，别动它；
+    - 「正常回复完」（done）只有开了连续模式才继续；
+    - timeout（进聆听后一直没人说话）/ too_short / empty 一律退出——这些情况下用户
+      并没有要接着说，放行会让环境噪声无限刷轮次（忙循环刷屏）。
+    """
+    if result == "barged":
+        return True
+    return continuous and result == "done"
 
 
 # ── 纯函数组件（可离线单测）─────────────────────────────────
@@ -201,6 +219,7 @@ class _Session:
         self.deps = deps
         self.state = "IDLE"          # IDLE | LISTENING | REPLYING
         self.voice = ""              # 本连接音色（空 = 用全局 SERVER_VOICE）
+        self.client = ""             # 本连接是什么客户端（"mobile"/"pet"/"cli"/""）
         self.closed = False
         self._kws_stream = None      # 仅 rx_task 访问（IDLE 喂帧）
         self._kws_cooldown_until = 0.0
@@ -210,12 +229,14 @@ class _Session:
         self._pending_reset = False
         self.reply_outcome = ("done", "")
         self.barged = False
+        # 连续对话：回复完免唤醒继续听下一句（客户端开关控制，默认关）
+        self.continuous = False
         # 电平自适应：记录最近 2 秒的电平，唤醒时校准 VAD 阈值（说话轻的人也能检测）
         self._level_ring: list = []
         self._vad_threshold = VAD_THRESHOLD
         # 声纹锁定：音频环形缓冲（最近 4 秒）+ 会话级登记表
         self._audio_ring: list = []
-        self._speaker_manager = None
+        self._owner_emb = None       # 主人的声纹向量（会话内录入，重置/重连后重新录入）
         self._enrolled = False
         # 事件（rx_task 置位；actor 主循环消费）
         self.wake_event = asyncio.Event()
@@ -238,24 +259,45 @@ class _Session:
         return max(VAD_THRESHOLD / 4, min(VAD_THRESHOLD, wake_level / 2))
 
     def _speaker_check(self, samples: np.ndarray) -> bool:
-        """声纹锁定校验：未录入则录入；已录入则比对。返回 True 表示通过（或未启用）。"""
+        """声纹锁定校验：未录入则录入；已录入则比对。返回 True 表示通过（或未启用）。
+
+        三点原则（都是踩过坑之后加的）：
+        1. **先掐静音再提声纹** —— 手上是"唤醒词前后 4 秒"，真正的语音可能只有 1 秒；
+        2. **算不出/太短就放行** —— 宁可漏认，也别把主人挡在门外（拒绝一次要等 5 秒冷却）；
+        3. **高分通过时把这次并进声纹中心** —— 用得越多越准，低分的不并，免得被带偏。
+        """
         deps = self.deps
         if deps.speaker is None:
             return True
-        if self._speaker_manager is None:
-            self._speaker_manager = deps.speaker.create_manager()
         try:
-            if not self._enrolled:
-                # 首次唤醒：录入主人声纹
-                embedding = deps.speaker.extract(samples)
-                self._speaker_manager.add("主人", embedding)
-                self._enrolled = True
-                print("[声纹] 已录入主人声音（下次唤醒开始校验）", flush=True)
-                return True
-            return deps.speaker.verify(self._speaker_manager, samples)
+            embedding = deps.speaker.embed(samples)
         except Exception as e:
-            print(f"[声纹] 校验失败，跳过锁定: {e}", flush=True)
+            print(f"[声纹] 提取失败，跳过锁定: {e}", flush=True)
             return True
+        if embedding is None:
+            print("[声纹] 有效语音太短，本次跳过校验（放行）", flush=True)
+            return True
+
+        if not self._enrolled:
+            self._owner_emb = embedding
+            self._enrolled = True
+            print("[声纹] 已录入主人声音（下次唤醒开始校验）", flush=True)
+            return True
+
+        try:
+            score = deps.speaker.similarity(self._owner_emb, embedding)
+        except Exception as e:
+            print(f"[声纹] 比对失败，跳过锁定: {e}", flush=True)
+            return True
+        ok = score >= deps.speaker.threshold
+        print(f"[声纹] 相似度 {score:.3f}（阈值 {deps.speaker.threshold:.2f}）→ "
+              f"{'通过' if ok else '拒绝'}", flush=True)
+        if ok and score >= ADAPT_THRESHOLD:
+            # 高分通过：并进声纹中心（0.7 旧 + 0.3 新），让模板越用越贴近主人
+            self._owner_emb = [
+                0.7 * a + 0.3 * b for a, b in zip(self._owner_emb, embedding)
+            ]
+        return ok
 
     def _push_audio_ring(self, samples: np.ndarray):
         self._audio_ring.append(samples)
@@ -313,6 +355,7 @@ class _Session:
         t = ctrl.get("type")
         if t == "hello":
             self.voice = str(ctrl.get("voice") or "")
+            self.client = str(ctrl.get("client") or "")
             await _safe_send_json(ws, {"type": "hello_ok", "voice": self._voice()})
         elif t == "text":
             self._pending_text = str(ctrl.get("text") or "").strip()
@@ -324,6 +367,10 @@ class _Session:
             # 单击宠物等显式动作：免唤醒词直接聆听（仅待机接受，声纹锁不拦显式授权）
             if self.state == "IDLE":
                 self.listen_event.set()
+        elif t == "continuous":
+            # 连续对话开关：回复完接着听，不用每句喊「小音」
+            self.continuous = bool(ctrl.get("enabled"))
+            await _safe_send_json(ws, {"type": "continuous", "enabled": self.continuous})
         elif t == "reset":
             self._pending_reset = True
             self.reset_event.set()
@@ -355,7 +402,7 @@ async def _do_reset(ws: WebSocket, s: _Session):
     s.reset_event.clear()
     s._pending_reset = False
     # 重新录入声纹：重置后下一次唤醒视为新主人
-    s._speaker_manager = None
+    s._owner_emb = None
     s._enrolled = False
     await _safe_send_json(ws, {"type": "status", "text": "🔄 对话已重置"})
     deps.queue.put_nowait(
@@ -367,18 +414,22 @@ async def _reply_loop(ws: WebSocket, s: _Session, user_text: str):
     """REPLYING 主体（在 TURN_LOCK 内运行）：LLM 流式 → 逐句发文本+mp3。可被取消。"""
     deps = s.deps
     parts: list[str] = []
+    seq = 0
     try:
         async for sentence in sentence_stream(deps.bot.chat_stream(user_text)):
+            seq += 1
             parts.append(sentence)
             deps.history[-1]["content"] = "🤖 " + "".join(parts)
             if deps.bot.status:
                 await _safe_send_json(ws, {"type": "status", "text": deps.bot.status})
-            await _safe_send_json(ws, {"type": "sentence", "text": sentence})
+            # seq 让客户端把"这句文字"和"这段配音"对上号：合成比朗读慢时文字会跑到声音前面，
+            # 客户端拿 seq 就能等配音开始播了再上屏（否则聊天记录永远快半拍）
+            await _safe_send_json(ws, {"type": "sentence", "text": sentence, "seq": seq})
             try:
                 mp3 = await deps.tts.synthesize_stream(sentence)
             except Exception:
                 continue  # 合成失败：跳过播报，文字已显示
-            await _safe_send_json(ws, {"type": "audio", "format": "mp3"})
+            await _safe_send_json(ws, {"type": "audio", "format": "mp3", "seq": seq})
             await _safe_send_bytes(ws, mp3)
         full_reply = "".join(parts)
         if not full_reply:
@@ -398,8 +449,9 @@ async def _reply_loop(ws: WebSocket, s: _Session, user_text: str):
         deps.history[-1]["content"] = f"🤖 {''.join(parts)}" if parts else "🤖 （回复中断）"
         s.reply_outcome = ("error", f"⚠️ {e}")
     except Exception as e:
+        logger.exception("回复轮次失败")          # 完整体现在 xiaoyin.log 里
         deps.history[-1]["content"] = f"⚠️ LLM 调用失败：{e}"
-        s.reply_outcome = ("error", "⚠️ LLM 调用失败")
+        s.reply_outcome = ("error", f"⚠️ 回复失败：{type(e).__name__} {str(e)[:60]}")
 
 
 async def _reply_phase(ws: WebSocket, s: _Session, user_text: str, prefix: str):
@@ -408,6 +460,11 @@ async def _reply_phase(ws: WebSocket, s: _Session, user_text: str, prefix: str):
     deps.history.append({"role": "user", "content": f"{prefix} {user_text}"})
     deps.history.append({"role": "assistant", "content": ""})
     deps.tts.VOICE = s._voice()
+    # 本轮请求来自哪类客户端：必须在进轮次锁之前拷出来（锁内所有会话共用同一个 bot，
+    # 分不清谁是谁）；工具靠它决定「点歌是推给手机还是播在电脑上」
+    import devices
+
+    devices.set_turn_origin(s.client)
     deps.queue.put_nowait(
         {"sentences": [], "status": f"🤖 已识别：「{user_text}」— 正在生成回复...",
          "history": list(deps.history)}
@@ -447,15 +504,40 @@ async def _reply_phase(ws: WebSocket, s: _Session, user_text: str, prefix: str):
     return barged
 
 
-async def _listening_phase(ws: WebSocket, s: _Session):
-    """LISTENING：采集话语 → STT → 回复。返回后状态由调用方设置。"""
+async def _listen_rounds(ws: WebSocket, s: _Session) -> str:
+    """首轮聆听 + 连续模式下的续听轮次，直到不再续听或连接断开。
+
+    首轮用宽松超时（等用户开口）；续听轮用 CONTINUOUS_TIMEOUT（默认 10s）——
+    静一会儿就说明聊完了，回待机等下次唤醒。
+    """
+    result = await _listening_phase(ws, s)
+    while should_follow_up(s.continuous, result) and not s.closed:
+        await _safe_send_json(
+            ws, {"type": "status", "text": "🔁 还在听，直接说下一句（停顿一会儿我就先歇着）"}
+        )
+        result = await _listening_phase(
+            ws, s, timeout=CONTINUOUS_TIMEOUT, follow_up=True
+        )
+    return result
+
+
+async def _listening_phase(ws: WebSocket, s: _Session,
+                           timeout: float = LISTEN_NO_SPEECH_TIMEOUT,
+                           follow_up: bool = False):
+    """LISTENING：采集话语 → STT → 回复。返回后状态由调用方设置。
+
+    timeout：等用户开口的上限。唤醒后的首轮宽松（15s），连续对话的续听轮次紧一些
+    （默认 10s，.env 可调），免得以为人走了还在那干等。
+    follow_up：本轮的结束语要区分——续听轮超时说明用户聊完了，不该再说
+    「说「小音」再试一次」。
+    """
     deps = s.deps
     s.state = "LISTENING"
     s._collector = UtteranceCollector(threshold=s._vad_threshold)
     s.utterance_done.clear()
     trigger = await _wait_any(
         s, {"done": s.utterance_done, "reset": s.reset_event},
-        timeout=LISTEN_NO_SPEECH_TIMEOUT,
+        timeout=timeout,
     )
     if s.closed:
         return "closed"
@@ -467,10 +549,12 @@ async def _listening_phase(ws: WebSocket, s: _Session):
     s._collector = None
 
     if trigger == "timeout":
-        # 一直没听到声音：给用户明确反馈，回待机
-        await _safe_send_json(
-            ws, {"type": "status", "text": "👂 没有听到声音，说「小音」再试一次"}
-        )
+        # 一直没听到声音：给用户明确反馈，回待机。
+        # 续听轮超时说明用户聊完了，措辞要区分开
+        await _safe_send_json(ws, {"type": "status", "text": (
+            "👂 连续对话结束，说「小音」再叫我" if follow_up
+            else "👂 没有听到声音，说「小音」再试一次"
+        )})
         return "timeout"
 
     if len(audio) < int(SAMPLE_RATE * UTTERANCE_MIN_SEC):
@@ -562,9 +646,7 @@ async def _session(ws: WebSocket, deps: VoiceDeps):
                 await _safe_send_json(
                     ws, {"type": "wake", "keyword": "小音", "source": "click"}
                 )
-                result = await _listening_phase(ws, s)
-                while result == "barged" and not s.closed:
-                    result = await _listening_phase(ws, s)
+                await _listen_rounds(ws, s)
                 s.state = "IDLE"
                 continue
             if trigger == "text":
@@ -579,10 +661,8 @@ async def _session(ws: WebSocket, deps: VoiceDeps):
             # wake
             print(f"[语音会话] 检测到唤醒词", flush=True)
             await _safe_send_json(ws, {"type": "wake", "keyword": "小音"})
-            result = await _listening_phase(ws, s)
-            while result == "barged" and not s.closed:
-                # 打断后直接进入新一轮聆听（无需再唤醒），支持连环打断
-                result = await _listening_phase(ws, s)
+            # 打断后免唤醒继续听是原本就有的行为；连续模式把它扩展到"正常回复完也继续"
+            await _listen_rounds(ws, s)
             s.state = "IDLE"
     except Exception:
         pass
@@ -607,3 +687,43 @@ def register_routes(app, deps: VoiceDeps):
         await _session(ws, deps)
 
     app.add_api_websocket_route(WS_PATH, _ws)
+
+
+DEVICE_WS_PATH = "/ws/device"
+
+
+def register_device_routes(app):
+    """安卓遥控 App 的常驻连接：服务器往它推「播放/暂停/切歌」指令。
+
+    与语音会话不同，这条连接没有音频上下行，只做下行指令投递（登记进 devices 注册表，
+    音乐工具推指令时按需查表）。
+    """
+    import devices
+
+    async def _ws(ws: WebSocket):
+        await ws.accept()
+        devices.register(ws)
+        try:
+            await _safe_send_json(ws, {"type": "ready", "path": DEVICE_WS_PATH})
+            while True:
+                msg = await ws.receive()
+                if msg.get("type") != "websocket.receive":
+                    break                      # 断开帧
+                if msg.get("text"):
+                    try:
+                        ctrl = json.loads(msg["text"])
+                    except ValueError:
+                        continue
+                    if ctrl.get("type") == "hello":
+                        await _safe_send_json(ws, {"type": "hello_ok", "client": "device"})
+                    # App 不需要上行，其余消息忽略即可
+        except Exception:
+            pass
+        finally:
+            devices.remove(ws)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    app.add_api_websocket_route(DEVICE_WS_PATH, _ws)

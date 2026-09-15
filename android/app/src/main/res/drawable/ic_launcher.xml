@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 简易图标：粉底 + 音符（和电脑端小音的粉色系呼应） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFE3EA"
+        android:pathData="M0,0h108v108h-108z" />
+    <path
+        android:fillColor="#FF9EB2"
+        android:pathData="M62,28 L62,68 a10,10 0 1,1 -8,-9.8 L54,42 L40,46 L40,74 a10,10 0 1,1 -8,-9.8 L32,40 z" />
+</vector>

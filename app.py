@@ -14,11 +14,31 @@
 """
 
 import asyncio
+import logging
+import logging.handlers
 import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+# 除了打屏，也写一份到 xiaoyin.log：出问题时能翻到完整异常，
+# 而不是像以前那样异常被 except 吞掉、界面上只剩一句"调用失败"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        # 滚动写，别让它无限长大
+        logging.handlers.RotatingFileHandler(
+            Path(__file__).parent / "xiaoyin.log", maxBytes=1_000_000, backupCount=2,
+            encoding="utf-8",
+        ),
+    ],
+)
+# 这些库都爱刷 INFO（每个 HTTP 请求 / 每段音频都记一条），会淹掉真正有用的异常和声纹分数
+for _noisy in ("httpx", "httpcore", "urllib3", "asyncio", "faster_whisper", "numba"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 # ⚠️ 必须在 import gradio 之前设置，否则代理会把 localhost 请求转发到代理服务器导致 502
 for key in ("NO_PROXY", "no_proxy"):
@@ -38,9 +58,11 @@ from speech_utils import sentence_stream, audio_duration_sec
 from conversation_store import save_conversation, load_conversation, clear_conversation
 from wakeword import KwsFeedDetector, sherpa_available
 from speaker import SpeakerVerifier, speaker_available
+import devices
 from voice_server import (
     VoiceDeps,
     register_routes,
+    register_device_routes,
     pop_latest_turn,
     should_advance,
     unlink_path,
@@ -101,12 +123,25 @@ if not _kws_ok:
 
 # ── 核心处理 ────────────────────────────────────────────────
 
-async def process_voice(audio: tuple):
+def _origin_from_request(request) -> str:
+    """Gradio 界面这次请求来自哪种设备：手机浏览器 → "mobile"（决定点歌在哪儿播）。"""
+    try:
+        ua = (request.headers.get("user-agent") or "") if request else ""
+    except Exception:
+        ua = ""
+    if any(k in ua for k in ("Android", "iPhone", "iPad", "Mobile")):
+        return "mobile"
+    return "browser"
+
+
+async def process_voice(audio: tuple, request: gr.Request = None):
     """处理麦克风语音输入（识别 → LLM 流式生成 → 按句合成逐句播报）。
 
     Args:
         audio: Gradio Audio 组件返回的 (sample_rate, np.ndarray)
+        request: Gradio 注入，用来判断请求是不是从手机上发来的
     """
+    devices.set_turn_origin(_origin_from_request(request))
     if audio is None:
         yield SERVER_HISTORY, "⚠️ 未检测到音频输入", None
         return
@@ -169,8 +204,9 @@ async def process_voice(audio: tuple):
         save_conversation(SERVER_HISTORY, bot.conversation)
 
 
-async def process_text(text: str):
+async def process_text(text: str, request: gr.Request = None):
     """处理文字输入（LLM 流式生成 → 按句合成逐句播报）。"""
+    devices.set_turn_origin(_origin_from_request(request))
     if not text or not text.strip():
         yield SERVER_HISTORY, "⚠️ 请输入文字", None
         return
@@ -346,6 +382,13 @@ with gr.Blocks(title="小音") as demo:      # title 会进 PWA manifest（"添�
                 elem_id="wake-btn",
                 interactive=_kws_ok,
             )
+            # 连续对话：唤醒一次后连着问，不用每句喊「小音」（默认关，超时自动休眠）
+            continuous_btn = gr.Button(
+                "🔁 连续对话：关",
+                size="sm",
+                elem_id="continuous-btn",
+                interactive=_kws_ok,
+            )
             wake_status = gr.HTML(
                 "<span style='color:#888'>"
                 + (
@@ -415,6 +458,13 @@ with gr.Blocks(title="小音") as demo:      # title 会进 PWA manifest（"添�
     wake_btn.click(
         fn=None,
         js="() => { if (window.wakeToggle) window.wakeToggle();"
+        " else alert('免提唤醒脚本未加载，请刷新页面'); }",
+    )
+
+    # 连续对话开关：同样是纯前端逻辑（web/wake_mode.js 中的 window.continuousToggle）
+    continuous_btn.click(
+        fn=None,
+        js="() => { if (window.continuousToggle) window.continuousToggle();"
         " else alert('免提唤醒脚本未加载，请刷新页面'); }",
     )
 
@@ -497,6 +547,8 @@ _voice_deps = VoiceDeps(
     queue=WAKE_QUEUE,
 )
 register_routes(demo.app, _voice_deps)
+# 安卓遥控 App 的常驻连接（/ws/device）：服务器借着它把「播放/暂停/切歌」推给手机
+register_device_routes(demo.app)
 
 # 注意：不能用 /static 前缀——gradio 自带 /static/{path:path} 捕获路由会先截走请求
 demo.app.mount(
@@ -516,6 +568,15 @@ if __name__ == "__main__":
     # 这里保持纯 HTTP：本机的宠物/CLI 客户端走的是 ws://，换成 HTTPS 会把它们打断。
     # 手机要的 HTTPS 由 phone_server.py 另起一个端口（7861）做 TLS 反向代理转发到本端口。
     _web = Path(__file__).parent / "web"
+
+    # 局域网自动发现：手机 App 广播探测包就能找到本机，不用手输 IP（换网/IP 变了也不用改）
+    from discovery import UDP_PORT, start_responder
+
+    if start_responder(_port) is not None:
+        print(f"[就绪] 手机 App 可自动发现本机（UDP {UDP_PORT}）")
+    else:
+        print(f"[提示] 自动发现未启用（UDP {UDP_PORT} 被占用？）——不影响其他功能")
+
     print(f"\n[就绪] 启动 Web 界面（http://0.0.0.0:{_port}）...")
     demo.launch(
         server_name="0.0.0.0",

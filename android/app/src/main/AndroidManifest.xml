@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 语音助手：采集麦克风；配合前台服务的 microphone 类型，锁屏也能继续听 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- 从后台服务里调起 QQ 音乐：Android 10+ 默认禁止后台启动界面，
+         持有"显示在其他应用上层"权限是官方留的例外通道（自动化类 App 的通行做法） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.XiaoyinRemote"
+        android:usesCleartextTraffic="true">
+        <!-- usesCleartextTraffic：连的是家里局域网的 ws://（明文），Android 9+ 默认禁止。
+             App 不传麦克风音频，也不需要安全上下文，走明文最简单。 -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 常驻服务：维持到小音服务器的 WebSocket（收指令 + 语音会话）。
+             microphone 类型是锁屏继续听的前提：Android 14+ 只有声明了它才允许后台用麦克风 -->
+        <service
+            android:name=".RemoteService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync|microphone" />
+
+        <!-- 媒体控制需要"通知使用权"：有了它才能拿到 QQ 音乐的 MediaSession，
+             从而暂停/切歌（QQ 音乐没有公开的控制协议） -->
+        <service
+            android:name=".MediaListener"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

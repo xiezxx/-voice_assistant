@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">小音</string>
+    <string name="usage">在**手机上**对小音说「放首晴天」，歌就会从手机的 QQ 音乐里播出来（用电脑或桌宠说话时仍然播在电脑上，互不影响）。</string>
+    <string name="host_hint">电脑地址，例如 192.168.1.5:7860</string>
+    <string name="connect">连接</string>
+    <string name="disconnect">断开</string>
+    <string name="discover">🔍 自动发现服务器（推荐）</string>
+    <string name="settings">⚙ 设置</string>
+
+    <string name="voice_start">🎙️ 开始对话</string>
+    <string name="voice_stop">⏹ 结束对话</string>
+    <string name="continuous_off">🔁 连续 关</string>
+    <string name="continuous_on">🔁 连续 开</string>
+
+    <string name="orb_off">🎙️</string>
+    <string name="orb_idle">👂</string>
+    <string name="orb_wake">👋</string>
+    <string name="orb_think">🤔</string>
+    <string name="orb_speak">🔊</string>
+    <string name="orb_error">⚠️</string>
+
+    <string name="status_idle">还没开始 —— 点下面的按钮，然后说「小音」</string>
+    <string name="conn_idle">🔗 设备通道：未启动</string>
+    <string name="conn_up">🔗 设备通道：✅ 已连接 —— 手机上点歌会播在手机上</string>
+    <string name="conn_down">🔗 设备通道：❌ 未连接 —— 现在点歌会播在电脑上</string>
+
+    <string name="chat_empty">还没有对话。点下面的「开始对话」，说「小音」唤醒，聊天会一句一句出现在这里。</string>
+    <string name="chat_clear">清空对话</string>
+    <string name="chat_title">对话记录</string>
+
+    <string name="permissions_title">需要两项系统权限</string>
+    <string name="grant_overlay">① 显示在其他应用上层</string>
+    <string name="grant_notify_access">② 通知使用权</string>
+    <string name="hint_rom">提示：国产 ROM 还需在系统设置里允许本应用「自启动」和「后台运行」，否则服务会被杀掉。</string>
+</resources>

@@ -1,0 +1,15 @@
+[versions]
+agp = "9.1.0"
+appcompat = "1.6.1"
+material = "1.10.0"
+constraintlayout = "2.1.4"
+okhttp = "4.12.0"          # 收服务器推来的指令（Android 没有内置 WebSocket 客户端）
+
+[libraries]
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

@@ -13,3 +13,10 @@ pet_run.log
 nul
 certs/
 web/cert.pem
+
+# 安卓工程
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+web/xiaoyin-remote.apk
