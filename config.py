@@ -18,6 +18,13 @@ class Config:
     """全局配置，从环境变量读取，有合理默认值。"""
 
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", os.getenv("ANTHROPIC_API_KEY", ""))
+    # 用哪个模型。可用值随账号而变（`python -c "from llm import ChatBot; ..."` 可列出，
+    # 或直接看 https://platform.deepseek.com 的文档）：
+    #   deepseek-flash   —— 最快，但**是推理模型**：先想一段再开口，简单问题 0.8s、
+    #                       需要琢磨的问题可能 2s+，且思考也计费
+    #   deepseek-v4-pro  —— 更聪明，思考更长（实测同一问题要 7.7s 才开口）
+    #   deepseek-chat    —— 老的通用别名，不推理、开口最快，但不在新账号的模型列表里
+    DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
     WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")

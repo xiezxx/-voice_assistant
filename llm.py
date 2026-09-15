@@ -30,7 +30,7 @@ class ChatBot:
 
         try:
             response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+                model=Config.DEEPSEEK_MODEL,
                 max_tokens=512,
                 messages=[
                     {"role": "system", "content": system},
@@ -71,7 +71,7 @@ class ChatBot:
         try:
             # ── 第一轮：流式请求，边产出文本边收集工具调用 ──
             stream = await self.client.chat.completions.create(
-                model="deepseek-chat",
+                model=Config.DEEPSEEK_MODEL,
                 max_tokens=512,
                 messages=[
                     {"role": "system", "content": system},
@@ -130,7 +130,7 @@ class ChatBot:
 
             # ── 第二轮：携带工具结果生成最终回答 ──
             response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+                model=Config.DEEPSEEK_MODEL,
                 max_tokens=512,
                 messages=[
                     {"role": "system", "content": system},
