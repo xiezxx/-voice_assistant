@@ -375,12 +375,12 @@ async def execute_tool(name: str, arguments_json: str) -> str:
         if name == "play_music":
             from music import play_song
 
-            # 点歌要拉起客户端并操作界面（秒级阻塞），不能卡住事件循环
-            return await asyncio.to_thread(play_song, str(args.get("song", "")))
+            # play_song 内部自己决定：推给手机 App，还是走电脑端界面自动化（那里会丢线程）
+            return await play_song(str(args.get("song", "")))
         if name == "control_music":
             from music import media_action
 
-            return media_action(str(args.get("action", "")))
+            return await media_action(str(args.get("action", "")))
     except Exception as e:
         return f"工具执行失败: {e}"
     return f"未知工具: {name}"

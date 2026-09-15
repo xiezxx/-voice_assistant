@@ -25,6 +25,8 @@ class Config:
 
     VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.02"))
     SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "0.8"))
+    # 连续对话：回复完之后等下一句的秒数；超时就休眠回待唤醒
+    CONTINUOUS_TIMEOUT = float(os.getenv("CONTINUOUS_TIMEOUT", "10"))
 
     # 唤醒词「小音」：sherpa-onnx KWS 方案（默认，本地模型）
     WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "1") == "1"

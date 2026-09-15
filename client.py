@@ -8,7 +8,7 @@
     python client.py --host 192.168.1.8  # 局域网其他机器
     python client.py --voice zh-CN-XiaoyiNeural   # 指定音色（覆盖服务器全局）
 
-按键：r 重置对话，q 退出；播报中直接说话即可打断（服务器检测）。
+按键：r 重置对话，c 切换连续对话，q 退出；播报中直接说话即可打断（服务器检测）。
 """
 
 import argparse
@@ -19,6 +19,8 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
 from ws_audio import PygamePlayer, make_mic_stream
+
+_continuous = False   # 连续对话开关（c 键切换）
 
 
 async def recv_loop(ws, player: PygamePlayer):
@@ -56,6 +58,7 @@ async def recv_loop(ws, player: PygamePlayer):
 
 
 async def keyboard_loop(ws, stop_ev: asyncio.Event):
+    global _continuous
     try:
         import msvcrt  # Windows 键盘轮询
     except ImportError:
@@ -70,6 +73,12 @@ async def keyboard_loop(ws, stop_ev: asyncio.Event):
         elif ch == "r":
             await ws.send(json.dumps({"type": "reset"}))
             print("\n[对话已重置]", flush=True)
+        elif ch == "c":
+            # 连续对话：唤醒一次后连着问，不用每句喊「小音」（停一会儿自动休眠）
+            _continuous = not _continuous
+            await ws.send(json.dumps({"type": "continuous", "enabled": _continuous}))
+            print(f"\n[连续对话{'已开启 — 唤醒一次后可连着问' if _continuous else '已关闭'}]",
+                  flush=True)
 
 
 async def run(args):

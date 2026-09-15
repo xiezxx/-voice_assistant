@@ -19,6 +19,7 @@ from voice_server import (
     BargeDetector,
     pop_latest_turn,
     should_advance,
+    should_follow_up,
     unlink_path,
 )
 
@@ -164,6 +165,20 @@ def test_should_advance():
     print("✓ 播报节奏门控（到点/未到点/暂停）")
 
 
+def test_should_follow_up():
+    # 被打断（barged）后免唤醒继续听是既有行为，与连续模式开关无关
+    assert should_follow_up(False, "barged") is True
+    assert should_follow_up(True, "barged") is True
+    # 正常回复完：只有开了连续模式才续听
+    assert should_follow_up(True, "done") is True
+    assert should_follow_up(False, "done") is False
+    # 没听到声音 / 语音太短 / 识别为空 / 连接断 / 重置：一律退出，
+    # 否则环境噪声会让轮次无限刷（忙循环）
+    for result in ("timeout", "too_short", "empty", "closed", "reset"):
+        assert should_follow_up(True, result) is False, result
+    print("✓ 连续对话续听判定（打断必续 / 正常完成看开关 / 其余不续）")
+
+
 if __name__ == "__main__":
     test_iter_frames()
     test_utterance_collector()
@@ -171,4 +186,5 @@ if __name__ == "__main__":
     test_vad_calibration()
     test_queue_collapse()
     test_should_advance()
+    test_should_follow_up()
     print("\n全部通过 ✅")

@@ -27,6 +27,7 @@
   var nativeChunk = CHUNK;   // 按实际采样率折算的"凑够多少原生样本发一帧"
   var autoplayArmed = false; // 自动播放被拒后是否已挂上"用户一碰屏幕就重试"
   var rateInfo = '';         // 实际采样率（显示在聆听状态里，便于判断手机是否走了重采样）
+  var continuous = false;    // 连续对话：唤醒一次后连着问（服务端开关，默认关）
 
   // 聆听中的统一文案：带上真实采样率，手机上一眼能看出有没有走重采样
   function listeningMsg(prefix) {
@@ -66,6 +67,15 @@
     ws.binaryType = 'arraybuffer';
     ws.onopen = function () {
       wsRetry = 0;
+      // 声明客户端类型：手机上说「放首歌」时，服务端据此把指令推给手机上的遥控 App
+      // （桌面浏览器不带这个标记，点歌仍然播在电脑上，行为不变）
+      var mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
+      try { ws.send(JSON.stringify({ type: 'hello', client: mobile ? 'mobile' : 'browser' })); }
+      catch (e) {}
+      // 重连后补发连续对话开关（服务端状态是按连接走的）
+      if (continuous) {
+        try { ws.send(JSON.stringify({ type: 'continuous', enabled: true })); } catch (e) {}
+      }
       if (state === 'LISTENING') setStatus(listeningMsg());
     };
     ws.onmessage = function (ev) {
@@ -113,7 +123,13 @@
         setStatus('🔇 声音不是主人，已忽略');
         break;
       case 'turn_end':
-        setStatus(m.status || '✅ 完成 — 说「小音」继续');
+        setStatus(m.status || (continuous
+          ? '✅ 完成 — 直接说下一句就行'
+          : '✅ 完成 — 说「小音」继续'));
+        break;
+      case 'continuous':
+        continuous = !!m.enabled;
+        continuousLabel();
         break;
       case 'error':
         setStatus('⚠️ ' + (m.error || '出错了'));
@@ -287,9 +303,27 @@
     stopPlayback();
   }
 
+  function continuousLabel() {
+    var btn = document.getElementById('continuous-btn');
+    if (btn) btn.textContent = continuous ? '🔁 连续对话：开' : '🔁 连续对话：关';
+  }
+
+  function continuousToggle() {
+    continuous = !continuous;
+    continuousLabel();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'continuous', enabled: continuous }));
+    }
+    setStatus(continuous
+      ? '🔁 连续对话已开启 — 唤醒一次后可以连着问，停一会儿自动休眠'
+      : '连续对话已关闭 — 每句都要先说「小音」');
+  }
+
   // 按钮点击由 Gradio 的 click 事件（js 参数）调用本函数，勿在此重复绑定防双重切换
   window.wakeToggle = wakeToggle;
   window.wakeStop = wakeStop;
+  window.continuousToggle = continuousToggle;
+  continuousLabel();   // 页面加载时同步按钮文案
   window.addEventListener('beforeunload', function () {
     if (state !== 'IDLE') stopWakeMode();
   });

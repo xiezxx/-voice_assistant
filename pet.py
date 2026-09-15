@@ -467,8 +467,18 @@ def start_tray(window, bridge: "UiBridge"):
 
         threading.Thread(target=_force_exit, daemon=True).start()
 
+    def toggle_continuous(icon, item):
+        """连续对话：唤醒一次后连着问，不用每句喊「小音」（服务端开关，超时自动休眠）。"""
+        enabled = not _GLOBALS.get("continuous", False)
+        _GLOBALS["continuous"] = enabled
+        bridge.submit_control({"type": "continuous", "enabled": enabled})
+
+    def is_continuous(item):
+        return bool(_GLOBALS.get("continuous", False))
+
     menu = pystray.Menu(
         pystray.MenuItem("显示 / 隐藏宠物", toggle_show, default=True),
+        pystray.MenuItem("连续对话", toggle_continuous, checked=is_continuous),
         pystray.MenuItem("换模型", do_switch_model),
         pystray.MenuItem("开机自启动", toggle_autostart, checked=is_autostart),
         pystray.Menu.SEPARATOR,

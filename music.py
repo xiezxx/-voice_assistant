@@ -20,6 +20,7 @@
 2. QQ 音乐主窗口和一批辅助小窗共用 `TXGuiFoundation` 窗口类，找窗口必须按面积挑最大的。
 """
 
+import asyncio
 import ctypes
 import json
 import subprocess
@@ -29,6 +30,7 @@ import urllib.request
 import winreg
 from pathlib import Path
 
+import devices
 from config import Config
 
 # 搜索接口：免 Key、国内直连实测可用（返回 songmid/songname/singer）
@@ -216,12 +218,39 @@ def _get_player() -> _Player | None:
     return _player
 
 
-def media_action(action: str) -> str:
+def choose_target(client_kind: str, device_online: bool) -> str:
+    """纯函数：这次点歌/控制该在哪执行。
+
+    只有「请求来自手机浏览器」且「手机上的遥控 App 在线」才推给手机；
+    其余一律走电脑端——**桌宠/CLI/电脑浏览器的行为因此一点不变**。
+    """
+    if (client_kind or "").strip().lower() == "mobile" and device_online:
+        return "device"
+    return "pc"
+
+
+# 设备侧的动作名（发过去给安卓 App 用）
+_DEVICE_ACTIONS = {
+    "Pause": ("pause", "已暂停手机上的 QQ 音乐"),
+    "Play": ("resume", "手机继续播放"),
+    "PlayNext": ("next", "手机已切到下一首"),
+    "PlayPrev": ("prev", "手机已切回上一首"),
+}
+
+
+async def media_action(action: str) -> str:
     """暂停 / 继续 / 上一首 / 下一首。返回中文结果文案。"""
     key = (action or "").strip().lower()
     method = _ACTION_METHODS.get(key)
     if not method:
         return "支持的操作有：暂停、继续、下一首、上一首"
+
+    # 手机上装了小音遥控且这次是手机在说话 → 控手机上的 QQ 音乐
+    if choose_target(devices.turn_origin(), devices.online()) == "device":
+        device_cmd, device_reply = _DEVICE_ACTIONS[method]
+        if await devices.send({"type": "media", "action": device_cmd}):
+            return device_reply
+
     if not _client_pids() and find_qqmusic() is None:
         return "没找到 QQ 音乐客户端，没法控制播放"
 
@@ -459,8 +488,8 @@ def _send_key(vk: int):
         time.sleep(_KEY_INTERVAL)
 
 
-def play_song(song: str) -> str:
-    """点歌：搜索 → 把歌名打进客户端搜索框并回车。返回中文结果文案。"""
+async def play_song(song: str) -> str:
+    """点歌：手机遥控 App 在线且这次是手机在说话 → 推给手机播；否则走电脑端。"""
     song = (song or "").strip()
     if not song:
         return "想听什么歌？说个歌名，比如「放首晴天」"
@@ -470,6 +499,25 @@ def play_song(song: str) -> str:
         return f"没搜到《{song}》，换个歌名试试？"
 
     label = f"《{hit['name']}》" + (f" - {hit['singer']}" if hit["singer"] else "")
+
+    # 手机在说话且遥控 App 在线 → 让手机自己用 qqmusic:// 调起 QQ 音乐播放
+    if choose_target(devices.turn_origin(), devices.online()) == "device":
+        ok = await devices.send({
+            "type": "play",
+            "songmid": hit["songmid"],
+            "name": hit["name"],
+            "singer": hit["singer"],
+        })
+        if ok:
+            return f"正在你手机上播放{label}"
+        # 推送失败（设备刚掉线）：不打断用户，静默回落到电脑端继续试
+
+    # 电脑端走界面自动化，是秒级阻塞操作，丢线程里跑别卡住语音事件循环
+    return await asyncio.to_thread(_play_on_pc, hit, label)
+
+
+def _play_on_pc(hit: dict, label: str) -> str:
+    """电脑端点歌（原有实现）：拉起客户端 → 搜索框输入歌名 → 点联想第一条。"""
     exe = find_qqmusic()
     if exe is None:
         return "没找到 QQ 音乐客户端，可以在 .env 里用 QQMUSIC_PATH 指定安装路径"

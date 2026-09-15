@@ -9,8 +9,12 @@ import sys
 
 sys.stdout.reconfigure(errors="replace")  # 中文 Windows GBK 控制台打印 ✓ 不崩
 
+import asyncio
 import ctypes
+import json
+import threading
 
+import devices
 import music
 
 
@@ -49,11 +53,79 @@ def test_search_degradation(monkeypatch_url=None):
 
 
 def test_media_action_args():
-    assert "暂停" in music.media_action("") or "支持" in music.media_action("")
-    r = music.media_action("把音量调到最大")
+    assert "支持" in asyncio.run(music.media_action(""))
+    r = asyncio.run(music.media_action("把音量调到最大"))
     assert "支持的操作" in r, r
     assert "暂停" in r and "下一首" in r, r
     print("✓ 未知动作兜底:", r)
+
+
+def test_choose_target():
+    """在哪播的判定：只有"手机在说话 + 遥控 App 在线"才推给手机。"""
+    assert music.choose_target("mobile", True) == "device"
+    assert music.choose_target("mobile", False) == "pc"      # App 没连 → 回落电脑
+    assert music.choose_target("browser", True) == "pc"      # 电脑网页 → 电脑播
+    assert music.choose_target("pet", True) == "pc"          # 桌宠 → 电脑播
+    assert music.choose_target("cli", True) == "pc"
+    assert music.choose_target("", True) == "pc"             # 未知来源保守走电脑
+    assert music.choose_target("MOBILE", True) == "device"   # 大小写不敏感
+    print("✓ 播放目标判定：手机+在线→手机；其余一律电脑（电脑端行为不变）")
+
+
+async def _device_push_roundtrip():
+    """起一个带 /ws/device 的测试服务器，连一个假设备，验证指令真能推到。"""
+    import uvicorn
+    import websockets
+    from fastapi import FastAPI
+    from voice_server import register_device_routes
+
+    app = FastAPI()
+    register_device_routes(app)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8767,
+                                           log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        await asyncio.sleep(0.05)
+    try:
+        async with websockets.connect("ws://127.0.0.1:8767/ws/device") as ws:
+            assert json.loads(await ws.recv())["type"] == "ready"
+            assert devices.online()
+
+            # 模拟"手机在说话"：点歌 → 指令推给 App（且不碰电脑端的界面自动化）
+            devices.set_turn_origin("mobile")
+            reply = await music.play_song("晴天")
+            assert "手机" in reply, reply
+            cmd = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+            assert cmd["type"] == "play" and cmd["songmid"], cmd
+            assert cmd["name"], cmd
+
+            # 控制类同样推给手机
+            reply = await music.media_action("暂停")
+            assert "手机" in reply, reply
+            cmd = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+            assert cmd == {"type": "media", "action": "pause"}, cmd
+
+            # 来源切回电脑 → 不推给手机（这里只断言不再收到指令）
+            devices.set_turn_origin("pet")
+            await music.media_action("下一首")
+            try:
+                await asyncio.wait_for(ws.recv(), timeout=1.5)
+                raise AssertionError("电脑端来源不应推给手机")
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        devices.set_turn_origin("")
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_device_push():
+    if music.find_qqmusic() is None and not devices.online():
+        # 设备推送与是否装客户端无关，照跑；这里只是留个提示
+        pass
+    asyncio.run(_device_push_roundtrip())
+    print("✓ 设备推送：手机点歌/暂停推给 App；电脑来源不推（电脑端行为不变）")
 
 
 def test_action_aliases():
@@ -67,7 +139,7 @@ def test_action_aliases():
 
 
 def test_play_song_args():
-    r = music.play_song("")
+    r = asyncio.run(music.play_song(""))
     assert "歌名" in r or "想听" in r, r
     print("✓ 空歌名兜底:", r)
 
@@ -114,6 +186,8 @@ if __name__ == "__main__":
     test_search_degradation()
     test_media_action_args()
     test_action_aliases()
+    test_choose_target()
+    test_device_push()
     test_play_song_args()
     test_input_struct_layout()
     test_com_interface()
