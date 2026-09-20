@@ -306,6 +306,18 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_favorites",
+            "description": (
+                "播放 QQ 音乐里「我喜欢」歌单的歌。用户说「放我喜欢的歌」「来点我收藏的」"
+                "「播我的红心歌单」「随便放点我喜欢的」时调用。"
+                "和 play_music 的区别：play_music 要具体歌名，本工具不用歌名、放整个收藏歌单。"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 # 工具名 → 界面展示名（用于状态栏提示）
@@ -325,6 +337,7 @@ TOOL_DISPLAY = {
     "list_memos": "查询备忘",
     "delete_memo": "删除备忘",
     "play_music": "用QQ音乐放歌",
+    "play_favorites": "打开我喜欢的歌",
     "control_music": "控制音乐播放",
 }
 
@@ -381,6 +394,10 @@ async def execute_tool(name: str, arguments_json: str) -> str:
             from music import media_action
 
             return await media_action(str(args.get("action", "")))
+        if name == "play_favorites":
+            from music import play_favorites
+
+            return await play_favorites()
     except Exception as e:
         return f"工具执行失败: {e}"
     return f"未知工具: {name}"

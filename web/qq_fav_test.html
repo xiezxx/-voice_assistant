@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQ音乐「我喜欢」唤起测试</title>
+<style>
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; margin: 0; padding: 18px;
+         background: #f7f7f9; color: #222; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p.hint { color: #666; font-size: 14px; line-height: 1.7; margin: 6px 0 16px; }
+  .case { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 12px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .case h2 { font-size: 15px; margin: 0 0 10px; }
+  a.btn { display: block; text-align: center; padding: 14px; border-radius: 10px;
+          background: #07c160; color: #fff; text-decoration: none; font-size: 16px;
+          font-weight: 600; }
+  a.btn:active { opacity: .8; }
+  .note { font-size: 13px; color: #666; line-height: 1.7; background: #fffbe6;
+          border: 1px solid #ffe58f; border-radius: 10px; padding: 12px; }
+</style>
+</head>
+<body>
+  <h1>「我喜欢」唤起测试</h1>
+  <p class="hint">
+    手机上依次点下面每个按钮（每次都会弹「是否打开 QQ 音乐」，选打开）。
+    <b>重点是 ① 和 ②</b>：看能不能打开「我喜欢」那个歌单页、能不能直接开始播放。<br>
+    ⑥ 是参照组，它一定能让 QQ 音乐播放《晴天》—— 如果连它都没反应，说明是浏览器/权限的问题，不是链接的问题。
+  </p>
+  <div class="case">
+    <h2>① 打开「我喜欢」（网上查到的写法）</h2>
+    <a class="btn" href="qqmusic://qq.com/ui/myTab?p=%7B%22tab%22%3A%22fav%22%7D">点这个</a>
+  </div>
+  <div class="case">
+    <h2>② 打开并直接播放（我猜的，多带一个 action）</h2>
+    <a class="btn" href="qqmusic://qq.com/ui/myTab?p=%7B%22tab%22%3A%22fav%22%2C%22action%22%3A%22play%22%7D">点这个</a>
+  </div>
+  <div class="case">
+    <h2>③ 另一种路径写法 myLike</h2>
+    <a class="btn" href="qqmusic://qq.com/ui/myLike">点这个</a>
+  </div>
+  <div class="case">
+    <h2>④ 另一种路径写法 myFavorite</h2>
+    <a class="btn" href="qqmusic://qq.com/ui/myFavorite">点这个</a>
+  </div>
+  <div class="case">
+    <h2>⑤ 直接播放整个收藏（猜的）</h2>
+    <a class="btn" href="qqmusic://qq.com/media/playMyFavorite">点这个</a>
+  </div>
+  <div class="case">
+    <h2>⑥ 参照组：播放《晴天》（已知一定能用）</h2>
+    <a class="btn" href="qqmusic://qq.com/media/playSonglist?p=%7B%22song%22%3A%5B%7B%22songmid%22%3A%220039MnYb0qxYhV%22%7D%5D%2C%22action%22%3A%22play%22%7D">点这个</a>
+  </div>
+  <div class="note">
+    点完告诉我结果就行，比如「① 打开了喜欢页没播，② 直接放了，⑥ 正常」。<br>
+    每条的现象无非三种：<br>
+    · <b>打开了「我喜欢」歌单页</b>（可能还自动开始放了）→ 最好<br>
+    · 只打开了 QQ 音乐首页 → 认了协议但参数不对<br>
+    · 完全没反应 / 报错 → 这条不认
+  </div>
+</body>
+</html>

@@ -37,12 +37,22 @@ CHUNK = 1600                      # 每块样本数（0.1s）
 FRAME_BYTES = CHUNK * 2           # int16 单声道
 MAX_BUFFER_BYTES = 100_000        # 异常客户端缓冲上限
 KWS_COOLDOWN_SEC = 5.0            # 单连接唤醒冷却
+# 声纹拒绝后的提示抑制窗口（只是"别重复刷提示"，不再拦校验 —— 见 feed() 里的注释）
+REJECT_COOLDOWN_SEC = 2.0
 ADAPT_THRESHOLD = 0.75            # 声纹相似度高于此值时，把本次并进声纹中心（自适应更新）
 VAD_THRESHOLD = Config.VAD_THRESHOLD        # 能量门阈值（对齐 audio_utils.py）
 UTTERANCE_SILENCE_SEC = Config.SILENCE_DURATION  # 尾静音判定（.env 可调）
 UTTERANCE_MIN_SEC = 0.3           # 最短有效话语
 UTTERANCE_MAX_SEC = 12.0          # 最长录制
 BARGE_STREAK = 3                  # 连续 0.3s 有语音判定打断
+# 打断门限 = 聆听门限 × 这个倍数。
+# 必须比聆听门高：聆听门要低到"词与词的停顿"也算还在说话，而打断是用户**主动提高音量**
+# 插话，本来就比正常说话响。两者共用一个门限时怎么调都是拆东墙补西墙（手机热点那台
+# 用户反馈"说话被切断"和"播报被别的声音打断"同时出现，就是这个原因）。
+BARGE_MULT = 2.0
+# 每发一句音频后的"打断静默窗"（秒）：刚起播那一下自己的外放最响，最容易把自己的回声
+# 当成用户插话。手机上的 AEC 只对通话路径有效，媒体外放拿不到参考信号，所以只能靠这个。
+BARGE_GRACE_SEC = 0.4
 SEND_TIMEOUT = 10.0               # 单条消息发送超时（背压保护，超时中止轮次）
 LISTEN_NO_SPEECH_TIMEOUT = 15.0   # 唤醒后一直没听到声音：超时提示并回待机
 CONTINUOUS_TIMEOUT = Config.CONTINUOUS_TIMEOUT  # 连续对话：回复完后等下一句的秒数（.env 可调）
@@ -226,6 +236,8 @@ class _Session:
         self._reject_cooldown_until = 0.0  # 声纹拒绝冷却，防连续拒绝
         self._collector: Optional[UtteranceCollector] = None
         self._barge = BargeDetector()
+        self._barge_mute_until = 0.0     # 起播静默窗（见 BARGE_GRACE_SEC）
+        self._last_audio_sent = 0.0      # 上一句音频是什么时候发的（诊断用）
         self._pending_reset = False
         self.reply_outcome = ("done", "")
         self.barged = False
@@ -317,8 +329,11 @@ class _Session:
             async with self.deps.kws_lock:
                 keyword = self.deps.kws.feed(self._kws_stream, samples)
             if keyword and time.time() >= self._kws_cooldown_until:
-                if time.time() < self._reject_cooldown_until:
-                    return  # 拒绝冷却期内不再校验，避免连续拒绝刷屏/重复算力
+                # 拒绝冷却：只用来"别重复刷提示"，**绝不能跳过校验** ——
+                # 早先这里是直接 return，结果旁人说一句就把主人一起挡在门外 5 秒；
+                # 旁边要是一直有声音（电视、聊天），冷却不停续期，主人就永远唤不醒。
+                # 校验本身只要 20~50ms，每次照跑完全划得来。
+                in_reject_cooldown = time.time() < self._reject_cooldown_until
                 # 声纹锁定：用唤醒词前后 4 秒音频录入/比对，用后清空避免混入旧音频
                 wake_audio = (
                     np.concatenate(self._audio_ring)
@@ -332,12 +347,13 @@ class _Session:
                 else:
                     ok = await asyncio.to_thread(self._speaker_check, wake_audio)
                 if not ok:
-                    self._reject_cooldown_until = time.time() + KWS_COOLDOWN_SEC
-                    print("[声纹] 声音不匹配，已忽略", flush=True)
-                    if ws is not None:
-                        await _safe_send_json(
-                            ws, {"type": "speaker_reject", "text": "声音不是主人，已忽略"}
-                        )
+                    self._reject_cooldown_until = time.time() + REJECT_COOLDOWN_SEC
+                    if not in_reject_cooldown:
+                        print("[声纹] 声音不匹配，已忽略（主人仍可随时唤醒）", flush=True)
+                        if ws is not None:
+                            await _safe_send_json(
+                                ws, {"type": "speaker_reject", "text": "声音不是主人，已忽略"}
+                            )
                     return
                 # 通过：才进入唤醒冷却（主人紧接着再喊也能立即响应）
                 self._kws_cooldown_until = time.time() + KWS_COOLDOWN_SEC
@@ -347,7 +363,16 @@ class _Session:
             if self._collector is not None and self._collector.feed(samples):
                 self.utterance_done.set()
         elif self.state == "REPLYING":
+            # 起播静默窗：刚发完音频那一下自己的外放最响，先别听（见 BARGE_GRACE_SEC）
+            if time.time() < self._barge_mute_until:
+                return
+            level = float(np.abs(samples).mean())
             if self._barge.feed(samples):
+                # 打出真实数字，好判断到底是什么把它打断的：
+                # 距上次发音频很近（<1s）→ 几乎是自己的回声；隔得远 → 才是环境杂音
+                since = time.time() - self._last_audio_sent if self._last_audio_sent else -1
+                print(f"[打断] 电平 {level:.4f} > 门限 {self._vad_threshold * BARGE_MULT:.4f}"
+                      f"（聆听门 {self._vad_threshold:.4f}，距上次发音频 {since:.2f}s）", flush=True)
                 self.barge_event.set()
 
     async def handle_control(self, ctrl: dict, ws: WebSocket):
@@ -431,6 +456,8 @@ async def _reply_loop(ws: WebSocket, s: _Session, user_text: str):
                 continue  # 合成失败：跳过播报，文字已显示
             await _safe_send_json(ws, {"type": "audio", "format": "mp3", "seq": seq})
             await _safe_send_bytes(ws, mp3)
+            s._last_audio_sent = time.time()
+            s._barge_mute_until = s._last_audio_sent + BARGE_GRACE_SEC
         full_reply = "".join(parts)
         if not full_reply:
             deps.history[-1]["content"] = "🤖 （暂无回复）"
@@ -472,7 +499,7 @@ async def _reply_phase(ws: WebSocket, s: _Session, user_text: str, prefix: str):
     s.state = "REPLYING"
     s.reply_outcome = ("done", "")
     s.barged = False
-    s._barge = BargeDetector(threshold=s._vad_threshold)
+    s._barge = BargeDetector(threshold=s._vad_threshold * BARGE_MULT)
     s.barge_event.clear()
     s.stop_event.clear()
 
@@ -575,6 +602,11 @@ async def _listening_phase(ws: WebSocket, s: _Session,
         )
         return "empty"
 
+    # 记一笔识别质量：时长 + 峰值电平 + 识别文本。
+    # "识别不准"这类反馈光看文字没法判断是模型问题还是麦克风太小声/削顶，
+    # 有了峰值就能看出来（正常说话大约 0.05~0.3；贴着 1.0 说明削顶失真，小于 0.02 说明太小声）
+    peak = float(np.abs(audio).max()) if len(audio) else 0.0
+    print(f"[识别] {len(audio) / SAMPLE_RATE:.1f}s 峰值{peak:.3f} → 「{user_text}」", flush=True)
     await _safe_send_json(ws, {"type": "transcript", "text": user_text})
     barged = await _reply_phase(ws, s, user_text, "🎤")
     return "barged" if barged else "done"
@@ -716,7 +748,11 @@ def register_device_routes(app):
                         continue
                     if ctrl.get("type") == "hello":
                         await _safe_send_json(ws, {"type": "hello_ok", "client": "device"})
-                    # App 不需要上行，其余消息忽略即可
+                    elif ctrl.get("type") == "result":
+                        # 指令执行回执：交给 devices 去唤醒等它的那次调用
+                        # （没有这个的话，"手机上没切成"会被当场说成"切好了"）
+                        devices.resolve_result(ctrl)
+                    # 其余上行消息忽略即可
         except Exception:
             pass
         finally:

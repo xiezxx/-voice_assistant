@@ -391,6 +391,20 @@ async def _test_barge_in():
             # 第一句出现后，回复卡在长暂停处；发 0.4s 语音触发打断
             msg = await _expect(ws, timeout=10.0)
             assert msg["type"] == "sentence", msg
+            # 先等这一句的 mp3 到手 —— 服务端发完音频会开一个"起播静默窗"，
+            # 因为刚起播那一下自己的外放最响，手机上又拿不到 AEC 参考信号，
+            # 不挡的话就会"自己把自己打断"（用户就是这么反馈的）
+            while True:
+                m = await _expect(ws, timeout=10.0)
+                if isinstance(m, bytes):
+                    break
+                assert m["type"] in ("status", "audio"), m   # audio 事件后面紧跟二进制帧
+            # 窗内说话：**故意**不响应
+            for _ in range(4):
+                await ws.send(_frame(0.5))
+            await _expect_silence(ws, timeout=0.5)
+            # 过了静默窗再说话：这次必须打断
+            await asyncio.sleep(voice_server.BARGE_GRACE_SEC)
             for _ in range(4):
                 await ws.send(_frame(0.5))
             got_barge = False

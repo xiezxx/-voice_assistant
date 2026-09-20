@@ -60,8 +60,23 @@ _SEARCH_BOX_RATIO = (0.42, 0.045)
 # 输入歌名后弹出的联想列表第一条（锚定在搜索框正下方，位置比搜索结果页稳定）
 # 实测：点它才会真正开始播放；按回车只是跳到搜索结果页，不会播
 _SUGGESTION_RATIO = (0.418, 0.145)
-_MAIN_WINDOW_TITLE = "QQ音乐"         # 主窗口标题（与辅助窗区分，别用尺寸判断）
+# 「我喜欢」歌单：侧栏那一项，以及进去之后页面上的「播放」按钮
+# 实测于 QQMusic 21.31（最大化 2906x1730）：侧栏项在 (170,548)、播放按钮在 (640,434)
+_FAVORITE_ENTRY_RATIO = (0.0585, 0.3168)
+_FAVORITE_PLAY_RATIO = (0.2202, 0.2509)
+_MAIN_WINDOW_TITLE = "QQ音乐"         # 主窗口的「空闲」标题（放歌时它会变成「歌名 - 歌手」）
 _SKIP_TITLES = {"播放队列", "TXMenuWindow"}   # 同类的辅助小窗，别当成主窗口
+
+
+def _is_auxiliary_title(name: str) -> bool:
+    """这个标题是不是辅助小窗的（不是主窗口）。
+
+    ⚠️ 主窗口的标题会**跟着当前播放的歌变**（放歌时是「歌名 - 歌手」，
+    不再是「QQ音乐」），所以不能只认死标题。真正要挡掉的是客户端那些提示浮层 ——
+    它们有的还是整屏大小，按面积排序会把主窗口挤下去（测试里真被挤掉过：
+    主窗口最小化到托盘时只有 314x50，提示浮层 2880x1704，于是选错了窗口）。
+    """
+    return name in _SKIP_TITLES or "提示" in name
 _WINDOW_WAIT_SEC = 8.0                # 冷启动后等主窗口出现的上限
 _KEY_INTERVAL = 0.05
 
@@ -248,8 +263,14 @@ async def media_action(action: str) -> str:
     # 手机上装了小音遥控且这次是手机在说话 → 控手机上的 QQ 音乐
     if choose_target(devices.turn_origin(), devices.online()) == "device":
         device_cmd, device_reply = _DEVICE_ACTIONS[method]
-        if await devices.send({"type": "media", "action": device_cmd}):
-            return device_reply
+        # 等回执：推出去 ≠ 做成了。不等的话手机上失败也会被说成成功
+        # 超时给短一点：媒体控制本来就该是瞬间的事，等久了用户在那儿干等
+        result = await devices.send_and_wait({"type": "media", "action": device_cmd}, timeout=2.5)
+        if result is None:
+            return "手机没回应（App 可能被系统杀了，或已经断开）"
+        if not result.get("ok"):
+            return f"手机上没控制成功：{result.get('detail') or '未知原因'}"
+        return device_reply
 
     if not _client_pids() and find_qqmusic() is None:
         return "没找到 QQ 音乐客户端，没法控制播放"
@@ -356,11 +377,14 @@ def _send_input(inp) -> bool:
 
 
 def _main_window():
-    """找 QQ 音乐主窗口：优先标题为「QQ音乐」的那个，其次取面积最大的非辅助窗。
+    """找 QQ 音乐主窗口：优先标题为「QQ音乐」的那个（空闲时的标题），其次取面积最大的非辅助窗。
 
-    主窗口和一堆辅助小窗（TXMenuWindow 24x24、播放队列 896x746、若干无名窗）共用
-    `TXGuiFoundation` 类，只能靠标题区分。**不能按尺寸过滤**——主窗口被藏到托盘时
-    会被挪到屏幕外并缩成 314x50，那时候还得能找到它才谈得上恢复。
+    主窗口和一堆辅助小窗（TXMenuWindow 24x24、播放队列、提示浮层、若干无名窗）共用
+    `TXGuiFoundation` 类，只能靠标题区分。两个坑：
+    1. **不能按尺寸过滤**——主窗口被藏到托盘时会被挪到屏幕外并缩成 314x50，
+       那时候还得能找到它才谈得上恢复；
+    2. **主窗口标题会变**——放歌时是「歌名 - 歌手」，所以「QQ音乐」这个偏好
+       经常匹配不上，得靠排除辅助窗 + 面积兜底（见 _is_auxiliary_title）。
     """
     _ensure_dpi_aware()
     user32 = ctypes.windll.user32
@@ -382,7 +406,7 @@ def _main_window():
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
                 width = rect.r - rect.l
                 name = title.value.strip()
-                if name and name not in _SKIP_TITLES:
+                if name and not _is_auxiliary_title(name):
                     # 排序键：标题是「QQ音乐」的优先，其次按面积
                     found.append(((name == _MAIN_WINDOW_TITLE), width * (rect.b - rect.t),
                                   hwnd, rect))
@@ -431,6 +455,24 @@ def _ensure_window_visible(exe: Path):
         time.sleep(1.2)
         hwnd, rect = _main_window()
     return hwnd, rect
+
+
+def _qqmusic_in_foreground() -> bool:
+    """前台窗口是不是 QQ 音乐（是它家的任意一个窗口都算）。
+
+    不能只比对主窗口句柄：客户端自己会弹出提示小窗（比如「已开始播放提示」），
+    那一瞬间前台就不是主窗口了 —— 按句柄比会把自己刚触发的正常弹窗误判成
+    「窗口被切走了」，功能反而在成功的那一刻放弃。
+
+    真正的红线是「别点进别人的窗口」，所以判据应该是**进程**，不是具体窗口。
+    """
+    user32 = ctypes.windll.user32
+    fg = user32.GetForegroundWindow()
+    if not fg:
+        return False
+    pid = ctypes.c_ulong()
+    user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+    return pid.value in _client_pids()
 
 
 def _foreground(hwnd) -> bool:
@@ -502,15 +544,20 @@ async def play_song(song: str) -> str:
 
     # 手机在说话且遥控 App 在线 → 让手机自己用 qqmusic:// 调起 QQ 音乐播放
     if choose_target(devices.turn_origin(), devices.online()) == "device":
-        ok = await devices.send({
+        # 点歌要调起 App，给宽一点（但也不能无限等）
+        result = await devices.send_and_wait({
             "type": "play",
             "songmid": hit["songmid"],
             "name": hit["name"],
             "singer": hit["singer"],
-        })
-        if ok:
+        }, timeout=6.0)
+        if result is not None and result.get("ok"):
             return f"正在你手机上播放{label}"
-        # 推送失败（设备刚掉线）：不打断用户，静默回落到电脑端继续试
+        if result is not None:
+            # 手机上明确说没成功（没装 QQ 音乐/没给悬浮窗权限）→ 如实转告，别再回落到电脑端
+            # 装作没事 —— 用户刚才明明说了"在手机上放"
+            return f"手机上没能播放：{result.get('detail') or '未知原因'}"
+        # 完全没回应（设备刚掉线）：不打断用户，静默回落到电脑端继续试
 
     # 电脑端走界面自动化，是秒级阻塞操作，丢线程里跑别卡住语音事件循环
     return await asyncio.to_thread(_play_on_pc, hit, label)
@@ -555,3 +602,58 @@ def _play_on_pc(hit: dict, label: str) -> str:
     _click(fresh.l + int(_SUGGESTION_RATIO[0] * (fresh.r - fresh.l)),
            fresh.t + int(_SUGGESTION_RATIO[1] * (fresh.b - fresh.t)))
     return f"正在播放{label}"
+
+
+# ── 播放「我喜欢」─────────────────────────────────────────
+
+# 客户端**没有**提供"放我的收藏"这类接口：桌面端不认 qqmusic:// 协议（试过，不唤起），
+# 本地端口也不是可用 API。所以只剩界面自动化：点侧栏「喜欢」→ 点页面上的「播放」。
+async def play_favorites() -> str:
+    """播放 QQ 音乐里的「我喜欢」歌单。"""
+    label = "你喜欢的歌"
+    if choose_target(devices.turn_origin(), devices.online()) == "device":
+        if await devices.send({"type": "play_favorites"}):
+            return f"正在你手机上播放{label}"
+        # 手机端还没接上（或刚掉线）：不打断用户，回落到电脑端
+    return await asyncio.to_thread(_play_favorites_on_pc)
+
+
+def _play_favorites_on_pc() -> str:
+    """电脑端播「我喜欢」：切到客户端 → 点侧栏「喜欢」→ 点页面上的「播放」。"""
+    exe = find_qqmusic()
+    if exe is None:
+        return "没找到 QQ 音乐客户端，可以在 .env 里用 QQMUSIC_PATH 指定安装路径"
+
+    try:
+        hwnd, _ = _ensure_window_visible(exe)
+    except OSError:
+        return "没能启动 QQ 音乐，稍后再试试"
+    if hwnd is None:
+        return "QQ 音乐正在后台运行但主窗口打不开，点一下托盘图标再让我试"
+    if not _foreground(hwnd):
+        return "QQ 音乐没能切到前台，点一下它的窗口再让我试"
+
+    _ensure_dpi_aware()
+
+    def _safe_rect():
+        """点击前重新确认窗口还在原位、前台还是 QQ 音乐：用户可能正在用电脑，
+        窗口随时会被移动或切走，那样这一下就点进别人的窗口里去了（踩过）。"""
+        still, fresh = _main_window()
+        if still != hwnd or not _qqmusic_in_foreground():
+            return None
+        return fresh
+
+    fresh = _safe_rect()
+    if fresh is None:
+        return "QQ 音乐窗口刚被切换走了，先没敢操作，过一会儿再让我试"
+
+    _click(fresh.l + int(_FAVORITE_ENTRY_RATIO[0] * (fresh.r - fresh.l)),
+           fresh.t + int(_FAVORITE_ENTRY_RATIO[1] * (fresh.b - fresh.t)))
+    time.sleep(1.2)               # 等「喜欢」页加载出来
+
+    fresh = _safe_rect()          # 中间隔了一秒多，再确认一次才敢点播放
+    if fresh is None:
+        return "QQ 音乐窗口刚被切走了，没敢继续点播放"
+    _click(fresh.l + int(_FAVORITE_PLAY_RATIO[0] * (fresh.r - fresh.l)),
+           fresh.t + int(_FAVORITE_PLAY_RATIO[1] * (fresh.b - fresh.t)))
+    return "正在播放你喜欢的歌"

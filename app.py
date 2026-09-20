@@ -24,18 +24,65 @@ from typing import Optional
 
 # 除了打屏，也写一份到 xiaoyin.log：出问题时能翻到完整异常，
 # 而不是像以前那样异常被 except 吞掉、界面上只剩一句"调用失败"
+_file_handler = logging.handlers.RotatingFileHandler(
+    Path(__file__).parent / "xiaoyin.log", maxBytes=2_000_000, backupCount=2,
+    encoding="utf-8",
+)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        # 滚动写，别让它无限长大
-        logging.handlers.RotatingFileHandler(
-            Path(__file__).parent / "xiaoyin.log", maxBytes=1_000_000, backupCount=2,
-            encoding="utf-8",
-        ),
-    ],
+    handlers=[logging.StreamHandler(), _file_handler],
 )
+
+
+class _Tee:
+    """把 print 的输出也塞进日志文件。
+
+    项目里所有诊断（`[声纹] 相似度…`、`[打断] 电平…`、`[语音会话] …`）用的都是 print，
+    而 print 只走 stdout —— 服务是隐藏窗口起的，stdout 直接丢了，
+    结果日志文件里除了异常什么都没有，调参只能靠猜（真这么白跑过一轮）。
+    """
+
+    def __init__(self, console, handler):
+        self._console = console
+        self._handler = handler
+
+    def write(self, s):
+        try:
+            self._console.write(s)
+        except Exception:
+            pass
+        try:
+            # 每次都重新取一次 stream：文件轮转后句柄会换，缓存住就跟丢了
+            stream = self._handler.stream
+            stream.write(s)
+            # 立刻落盘：这些诊断是给"服务正在跑的时候"看的，
+            # 攒在缓冲区里要等 8KB 才写出去，等于看不见（踩过）
+            stream.flush()
+        except Exception:
+            pass
+        return len(s)
+
+    def flush(self):
+        for target in (self._console, getattr(self._handler, "stream", None)):
+            try:
+                target.flush()
+            except Exception:
+                pass
+
+    def __getattr__(self, name):
+        """其余属性（isatty / encoding / fileno / buffer…）统统转发给真实 stdout。
+
+        ⚠️ 不转发会直接把 uvicorn 搞崩：它启动时会调 `sys.stdout.isatty()`，
+        只实现 write/flush 的包装类会 AttributeError → Gradio 起不来 → 服务静默退出
+        （日志里还看不到原因，因为崩的时候日志本身也可能已经不可用了）。
+        """
+        return getattr(self._console, name)
+
+
+if not isinstance(sys.stdout, _Tee):
+    sys.stdout = _Tee(sys.__stdout__, _file_handler)
+    sys.stderr = _Tee(sys.__stderr__, _file_handler)
 # 这些库都爱刷 INFO（每个 HTTP 请求 / 每段音频都记一条），会淹掉真正有用的异常和声纹分数
 for _noisy in ("httpx", "httpcore", "urllib3", "asyncio", "faster_whisper", "numba"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
@@ -107,7 +154,9 @@ class PlaybackState:
 
 
 SERVER_HISTORY: list = _loaded_history   # 对话历史（含 🎤/🤖 表情前缀），所有路径共用
-SERVER_VOICE = "zh-CN-XiaoyiNeural"      # 音色由 dropdown.change 同步
+# 音色：默认从 .env 读（AI_VOICE），界面上那个下拉框可以临时改（改成别的之后以界面为准，
+# 重启又回到 .env 的值）—— 这样"换个声音"不用改代码
+SERVER_VOICE = os.getenv("AI_VOICE", "zh-CN-XiaoyiNeural")
 TURN_LOCK = asyncio.Lock()   # 串行化所有轮次（手动/免提共用，防 LLM 上下文并发破坏）
 STT_LOCK = asyncio.Lock()    # faster-whisper 未证明线程安全 → 串行化
 KWS_LOCK = asyncio.Lock()    # sherpa decode 串行化（跨 WS 连接）
