@@ -12,6 +12,15 @@
          持有"显示在其他应用上层"权限是官方留的例外通道（自动化类 App 的通行做法） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!-- 端侧模式要用系统语音合成（TextToSpeech）。targetSdk 30+ 起，
+         不声明这条 queries 的话，TextToSpeech 的 onInit 会直接返回 ERROR ——
+         一点声音都没有，而且不报任何有用的错，极难查（官方文档里埋在"包可见性"那节） -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:label="@string/app_name"

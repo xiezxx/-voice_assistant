@@ -1,13 +1,7 @@
 package com.xiaoyin.remote;
 
 import android.content.Context;
-import android.media.AudioFormat;
-import android.media.AudioRecord;
 import android.media.MediaPlayer;
-import android.media.MediaRecorder;
-import android.media.audiofx.AcousticEchoCanceler;
-import android.media.audiofx.AudioEffect;
-import android.media.audiofx.NoiseSuppressor;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -40,7 +34,7 @@ import okio.ByteString;
  *   <li>hello 必须带 {@code client:"mobile"}，否则"点歌"会被判成电脑端、播到电脑上。</li>
  * </ol>
  */
-public class VoiceClient {
+public class VoiceClient implements VoiceEngine {
 
     public interface Listener {
         /** 状态变化（用于界面显示和通知栏）。 */
@@ -57,8 +51,6 @@ public class VoiceClient {
         void onState(String state);
     }
 
-    private static final int FRAME_SAMPLES = 1600;     // 0.1s @ 16k
-    private static final int SAMPLE_RATE = 16000;
     private static final long RETRY_MS = 3000;
 
     private final Context context;
@@ -66,14 +58,11 @@ public class VoiceClient {
     private final Listener listener;
     private final OkHttpClient client;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    /** 采集与"发帧"：采集本身是两条链路共用的，这里只负责把帧推给服务器 */
+    private final MicCapture mic;
 
     private WebSocket socket;
     private volatile boolean running;
-
-    private AudioRecord record;
-    private final java.util.List<AudioEffect> effects = new java.util.ArrayList<>();
-    private Thread micThread;
-    private int nativeChunk = FRAME_SAMPLES;           // 按实测采样率折算的要读多少样本
 
     private final Deque<Clip> playQueue = new ArrayDeque<>();
     /** 还没播到的句子：seq → 文字（配音开始播时才上屏，见 onClipStart） */
@@ -90,6 +79,20 @@ public class VoiceClient {
         this.client = new OkHttpClient.Builder()
                 .pingInterval(20, TimeUnit.SECONDS)     // 服务端每 20s Ping，OkHttp 自动回 Pong
                 .build();
+        this.mic = new MicCapture(new MicCapture.Listener() {
+            @Override
+            public void onFrame(short[] frame) {
+                WebSocket ws = socket;
+                if (ws != null) {
+                    ws.send(ByteString.of(MicCapture.toLittleEndian(frame)));
+                }
+            }
+
+            @Override
+            public void onStatus(String text) {
+                status(text);
+            }
+        });
     }
 
     public void start() {
@@ -258,171 +261,16 @@ public class VoiceClient {
     }
 
     // ── 采集（全程不暂停：播报期间也要推流，否则打断检测失效）────
+    //
+    // 采集逻辑已经搬到 MicCapture（两条链路共用同一份：连电脑的推 WS，手机独立的喂本地引擎）。
+    // 这里只负责"拿到帧就发出去"。
 
     private void startMic() {
-        if (micThread != null) {
-            return;
-        }
-        micThread = new Thread(this::micLoop, "xiaoyin-mic");
-        micThread.start();
+        mic.start();
     }
 
     private void stopMic() {
-        Thread t = micThread;
-        micThread = null;
-        if (t != null) {
-            t.interrupt();
-        }
-        for (AudioEffect e : effects) {
-            try {
-                e.release();
-            } catch (Exception ignored) {
-            }
-        }
-        effects.clear();
-        if (record != null) {
-            try {
-                record.stop();
-            } catch (Exception ignored) {
-            }
-            try {
-                record.release();
-            } catch (Exception ignored) {
-            }
-            record = null;
-        }
-    }
-
-    /** 依次尝试的音源：识别优化 → 裸麦克风 → 通话（最后才用，见下面的注释）。 */
-    private static final int[] SOURCES = {
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            MediaRecorder.AudioSource.MIC,
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-    };
-
-    private void micLoop() {
-        int minBuf = AudioRecord.getMinBufferSize(
-                SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        if (!openMic(Math.max(minBuf, FRAME_SAMPLES * 2 * 4))) {
-            status("⚠️ 麦克风打不开（检查是否授予了麦克风权限）");
-            return;
-        }
-        // "请求"16k 不一定被满足：按实测采样率折算一帧要攒多少样本，再重采样回 16k
-        int actual = record.getSampleRate();
-        nativeChunk = Math.round(FRAME_SAMPLES * (actual > 0 ? actual : SAMPLE_RATE) / (float) SAMPLE_RATE);
-
-        // 外放的声音会被自己的麦克风收进去 → 助手播报时把自己打断。有回声消除就用上
-        // （比换音源更靠谱：某些机型上 VOICE_COMMUNICATION 没有通话时会返回一片静音，
-        //  那样唤醒词永远检测不到。所以它只当最后的退路）
-        enableEffect(AcousticEchoCanceler.create(record.getAudioSessionId()));
-        enableEffect(NoiseSuppressor.create(record.getAudioSessionId()));
-
-        try {
-            record.startRecording();
-        } catch (Exception e) {
-            status("⚠️ 无法开始录音：" + e.getMessage());
-            return;
-        }
-        status("🎙 聆听中 — 说「小音」唤醒");
-
-        // 攒够整整一帧（nativeChunk 个样本 ≈ 0.1 秒真实音频）才发。
-        // 不能读多少发多少：read 常常只返回一半，那样每帧代表的时长就短了，
-        // 服务端按"帧数×0.1秒"算时间轴会整体跑快，唤醒词和识别都会失败
-        short[] acc = new short[nativeChunk];
-        int filled = 0;
-        while (running && micThread == Thread.currentThread()) {
-            int n;
-            try {
-                n = record.read(acc, filled, acc.length - filled);
-            } catch (Exception e) {
-                break;
-            }
-            if (n <= 0) {
-                continue;
-            }
-            filled += n;
-            if (filled < acc.length) {
-                continue;
-            }
-            byte[] frame = toFrame(acc, acc.length);
-            WebSocket ws = socket;
-            if (frame != null && ws != null) {
-                ws.send(ByteString.of(frame));
-            }
-            filled = 0;
-        }
-        stopMic();
-    }
-
-    /** 按优先级打开麦克风，成功返回 true。 */
-    private boolean openMic(int bufSize) {
-        for (int src : SOURCES) {
-            AudioRecord r = null;
-            try {
-                r = new AudioRecord(src, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT, bufSize);
-                if (r.getState() == AudioRecord.STATE_INITIALIZED) {
-                    record = r;
-                    if (src != SOURCES[0]) {
-                        status("🎙 已改用备用音源（" + src + "）— 说「小音」唤醒");
-                    }
-                    return true;
-                }
-            } catch (Exception ignored) {
-                // 这个音源这台机器不支持，试下一个
-            }
-            if (r != null) {
-                try {
-                    r.release();
-                } catch (Exception ignored) {
-                }
-            }
-        }
-        return false;
-    }
-
-    private void enableEffect(AudioEffect effect) {
-        if (effect == null) {
-            return;
-        }
-        try {
-            effect.setEnabled(true);
-            effects.add(effect);        // 必须留引用，否则会被回收、效果随之失效
-        } catch (Exception e) {
-            try {
-                effect.release();
-            } catch (Exception ignored) {
-            }
-        }
-    }
-
-    /** 把读到的样本重采样成恰好 1600 样本（0.1 秒）的小端 int16 帧。 */
-    private byte[] toFrame(short[] src, int n) {
-        short[] out = new short[FRAME_SAMPLES];
-        if (n == FRAME_SAMPLES) {
-            System.arraycopy(src, 0, out, 0, n);
-        } else {
-            // 降采样要带低通，否则高频折返成噪声；这里用窗口平均（与网页端同一套做法）
-            double step = (double) n / FRAME_SAMPLES;
-            for (int i = 0; i < FRAME_SAMPLES; i++) {
-                int start = (int) Math.floor(i * step);
-                int end = Math.min((int) Math.ceil((i + 1) * step), n);
-                if (end <= start) {
-                    end = Math.min(start + 1, n);
-                }
-                long sum = 0;
-                for (int j = start; j < end; j++) {
-                    sum += src[j];
-                }
-                out[i] = (short) (sum / Math.max(1, end - start));
-            }
-        }
-        byte[] bytes = new byte[FRAME_SAMPLES * 2];
-        for (int i = 0; i < FRAME_SAMPLES; i++) {
-            bytes[i * 2] = (byte) (out[i] & 0xFF);            // 小端
-            bytes[i * 2 + 1] = (byte) ((out[i] >> 8) & 0xFF);
-        }
-        return bytes;
+        mic.stop();
     }
 
     // ── 播放（一句 mp3 一个临时文件，顺序播）────────────────

@@ -229,6 +229,71 @@
             android:text="@string/hint_rom"
             android:textSize="12sp"
             android:textColor="@color/text_dim" />
+
+        <!-- 语音链路模式：连电脑 / 手机独立 -->
+        <Button
+            android:id="@+id/mode_btn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/mode_remote"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/mode_hint"
+            android:textColor="@color/text_dim"
+            android:textSize="11sp" />
+
+        <!-- 手机独立模式要用大模型：模型名和 Key 都由用户自己填（不预置进 APK） -->
+        <EditText
+            android:id="@+id/model_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/model_hint"
+            android:inputType="text"
+            android:importantForAutofill="no"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/api_key_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/api_key_hint"
+            android:inputType="textPassword"
+            android:importantForAutofill="no"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/api_key_save_btn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/api_key_save"
+            android:textSize="13sp" />
+
+        <!-- 端侧调试读数：噪声底/门限/音源/KWS 命中/上次识别。
+             这一版只能在真机上试，没有这些数字就是盲调 -->
+        <TextView
+            android:id="@+id/debug_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:fontFamily="monospace"
+            android:lineSpacingExtra="2dp"
+            android:textColor="@color/text_dim"
+            android:textIsSelectable="true"
+            android:textSize="11sp" />
+
+        <!-- 构建时间：这一版要反复装很多次，用来确认"装的是不是最新那个包" -->
+        <TextView
+            android:id="@+id/build_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textColor="@color/text_dim"
+            android:textSize="11sp" />
     </LinearLayout>
 
     <!-- ── 底部操作 ── -->

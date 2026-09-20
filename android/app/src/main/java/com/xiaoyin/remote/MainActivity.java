@@ -61,6 +61,8 @@ public class MainActivity extends AppCompatActivity {
     private View settingsPanel;
     private Button voiceBtn;
     private Button continuousBtn;
+    private Button modeBtn;
+    private TextView debugText;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private AnimatorSet pulse;
@@ -99,6 +101,42 @@ public class MainActivity extends AppCompatActivity {
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         hostInput.setText(prefs.getString(KEY_HOST, ""));
+
+        // 构建时间：装了很多版之后，靠它一眼确认装的是不是最新的
+        ((TextView) findViewById(R.id.build_text)).setText("构建：" + BuildConfig.BUILD_TIME);
+
+        debugText = findViewById(R.id.debug_text);
+        modeBtn = findViewById(R.id.mode_btn);
+
+        // 手机独立模式要用大模型。Key 存手机本地、不预置进 APK（包里的字符串随手就能解出来，
+        // 而 Key 是能花钱的）；模型名可改 —— 两者都是**下一句就生效**，不用重启
+        EditText keyInput = findViewById(R.id.api_key_input);
+        EditText modelInput = findViewById(R.id.model_input);
+        keyInput.setText(prefs.getString("deepseek_key", ""));
+        String savedModel = prefs.getString("llm_model", "");
+        modelInput.setText(savedModel.isEmpty() ? "deepseek-chat" : savedModel);
+        findViewById(R.id.api_key_save_btn).setOnClickListener(v -> {
+            String k = keyInput.getText().toString().trim();
+            String m = modelInput.getText().toString().trim();
+            if (k.isEmpty()) {
+                Toast.makeText(this, R.string.api_key_empty, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            prefs.edit()
+                    .putString("deepseek_key", k)
+                    .putString("llm_model", m.isEmpty() ? "deepseek-chat" : m)
+                    .apply();
+            Toast.makeText(this, R.string.api_key_saved, Toast.LENGTH_LONG).show();
+        });
+        modeBtn.setOnClickListener(v -> {
+            String next = RemoteService.LOCAL_MODE.equals(RemoteService.voiceMode)
+                    ? RemoteService.REMOTE_MODE : RemoteService.LOCAL_MODE;
+            startService(new Intent(this, RemoteService.class)
+                    .setAction(RemoteService.ACTION_MODE)
+                    .putExtra(RemoteService.EXTRA_MODE, next));
+            RemoteService.voiceMode = next;      // 即时反馈，真实状态以服务为准
+            refreshMode();
+        });
 
         findViewById(R.id.settings_btn).setOnClickListener(v ->
                 settingsPanel.setVisibility(
@@ -227,6 +265,20 @@ public class MainActivity extends AppCompatActivity {
         if (renderedChatVersion != RemoteService.chatVersion()) {
             renderChat();
         }
+
+        if (debugText != null && !TextUtils.equals(debugText.getText(), RemoteService.debugText)) {
+            debugText.setText(RemoteService.debugText);      // 端侧调试读数（没开端侧时是空串）
+        }
+        refreshMode();
+    }
+
+    /** 模式按钮：显示当前在哪条链路上 */
+    private void refreshMode() {
+        if (modeBtn == null) {
+            return;
+        }
+        boolean local = RemoteService.LOCAL_MODE.equals(RemoteService.voiceMode);
+        modeBtn.setText(local ? R.string.mode_local : R.string.mode_remote);
     }
 
     // ── 状态球 ──────────────────────────────────────────────

@@ -7,6 +7,14 @@
     <string name="disconnect">断开</string>
     <string name="discover">🔍 自动发现服务器（推荐）</string>
     <string name="settings">⚙ 设置</string>
+    <string name="mode_remote">🔗 模式：连电脑</string>
+    <string name="mode_local">📴 模式：手机独立</string>
+    <string name="mode_hint">连电脑＝算力强、工具全；手机独立＝不需要电脑，唤醒/识别/合成都在这台手机上。</string>
+    <string name="model_hint">AI 模型，例如 deepseek-chat</string>
+    <string name="api_key_hint">DeepSeek API Key（手机独立模式要填）</string>
+    <string name="api_key_save">保存（模型 + Key）</string>
+    <string name="api_key_saved">已保存 ✓ 下一句就生效，不用重启</string>
+    <string name="api_key_empty">Key 不能为空</string>
 
     <string name="voice_start">🎙️ 开始对话</string>
     <string name="voice_stop">⏹ 结束对话</string>

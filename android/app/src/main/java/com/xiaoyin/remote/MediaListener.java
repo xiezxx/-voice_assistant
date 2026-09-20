@@ -37,40 +37,65 @@ public class MediaListener extends NotificationListenerService {
         return instance != null;
     }
 
+    /** 一次控制的结果。**必须带原因**：只回一个 false 的话，
+     *  电脑那边只知道"失败了"，用户只会听到"没控制成功"，谁也不知道该去修什么。 */
+    public static final class Result {
+        public final boolean ok;
+        public final String detail;
+
+        Result(boolean ok, String detail) {
+            this.ok = ok;
+            this.detail = detail;
+        }
+
+        public static Result ok() {
+            return new Result(true, "");
+        }
+
+        public static Result fail(String why) {
+            return new Result(false, why);
+        }
+    }
+
     /**
      * 对正在播放的 QQ 音乐执行一次控制。
      *
      * @param action pause / resume / next / prev
-     * @return 是否找到 QQ 音乐的会话并发出控制
      */
-    public static boolean control(String action) {
+    public static Result control(String action) {
         MediaListener self = instance;
         if (self == null) {
-            return false;   // 还没授权，或服务没连上
+            return Result.fail("还没授予「通知使用权」");
         }
         try {
             MediaSessionManager manager =
                     (MediaSessionManager) self.getSystemService(Context.MEDIA_SESSION_SERVICE);
             if (manager == null) {
-                return false;
+                return Result.fail("系统没有媒体会话服务");
             }
             List<MediaController> sessions = manager.getActiveSessions(null);
+            boolean sawQqMusicPackage = false;
             for (MediaController controller : sessions) {
                 if (!QQMusic.PACKAGE.equals(controller.getPackageName())) {
                     continue;
                 }
+                // 有会话、但可能没在放（暂停状态）——这种情况也要能控制，所以不看 playbackState
+                sawQqMusicPackage = true;
                 MediaController.TransportControls t = controller.getTransportControls();
                 switch (action) {
-                    case "pause": t.pause(); return true;
-                    case "resume": t.play(); return true;
-                    case "next": t.skipToNext(); return true;
-                    case "prev": t.skipToPrevious(); return true;
-                    default: return false;
+                    case "pause": t.pause(); return Result.ok();
+                    case "resume": t.play(); return Result.ok();
+                    case "next": t.skipToNext(); return Result.ok();
+                    case "prev": t.skipToPrevious(); return Result.ok();
+                    default: return Result.fail("不认识的操作：" + action);
                 }
             }
+            if (sawQqMusicPackage) {
+                return Result.fail("QQ 音乐的会话没在播放");
+            }
+            return Result.fail("找不到 QQ 音乐的播放会话（手机上 QQ 音乐开着吗？）");
         } catch (Exception e) {
-            return false;
+            return Result.fail(e.getClass().getSimpleName() + "：" + e.getMessage());
         }
-        return false;   // QQ 音乐当前没有活动会话（没在播）
     }
 }

@@ -53,7 +53,14 @@ public class RemoteService extends Service {
     public static final String ACTION_VOICE = "com.xiaoyin.remote.VOICE";
     /** 连续对话开关 */
     public static final String ACTION_CONTINUOUS = "com.xiaoyin.remote.CONTINUOUS";
+    /** 语音链路模式：连电脑 / 手机独立 */
+    public static final String ACTION_MODE = "com.xiaoyin.remote.MODE";
+    public static final String EXTRA_MODE = "mode";
     public static final String EXTRA_ENABLED = "enabled";
+    /** 连电脑：采集推给电脑上的服务器，收 mp3 回来播（默认，行为和以前完全一致） */
+    public static final String REMOTE_MODE = "remote";
+    /** 手机独立：唤醒/识别/合成都在手机上，只有大模型联网，**不需要电脑** */
+    public static final String LOCAL_MODE = "local";
 
     /** 服务状态变化会广播出去，供界面显示（MainActivity 注册接收）。 */
     public static final String ACTION_STATUS = "com.xiaoyin.remote.STATUS";
@@ -70,6 +77,7 @@ public class RemoteService extends Service {
     private static final long RETRY_MS = 3000;
     private static final String PREFS = "xiaoyin";
     private static final String KEY_HOST = "host";
+    private static final String KEY_MODE = "voice_mode";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private OkHttpClient client;
@@ -80,8 +88,13 @@ public class RemoteService extends Service {
     /** 设备通道当前是不是通的（状态的唯一真相）。界面用它显示"连上没连上"。 */
     public static volatile boolean isConnected = false;
     private boolean connected;
+    /** 当前模式（remote / local），存 SharedPreferences 让重启后还在 */
+    public static volatile String voiceMode = REMOTE_MODE;
+    /** 端侧调试读数（噪声底/门限/音源/KWS 命中…），界面直接显示，见 LocalVoiceEngine.updateDebug */
+    public static volatile String debugText = "";
     private int failures;         // 连续失败次数：用来决定要不要把排查提示也显示出来
-    private VoiceClient voice;    // 语音会话（可选，开关控制）
+    /** 当前语音链路（连电脑 / 手机独立），只会有其中一个活着 */
+    private VoiceEngine voice;
 
     // 界面回到前台时靠这两个静态字段恢复显示——广播只在界面活着时收得到，
     // 连接常常是在界面切到后台之后才成功的（否则界面会一直停在"正在连接"）
@@ -137,6 +150,9 @@ public class RemoteService extends Service {
             host = saved.trim();
             url = "ws://" + host + "/ws/device";
         }
+        // 模式同样要记：不然被系统杀掉重启后会莫名其妙回到"连电脑"
+        String mode = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_MODE, REMOTE_MODE);
+        voiceMode = LOCAL_MODE.equals(mode) ? LOCAL_MODE : REMOTE_MODE;
     }
 
     /**
@@ -182,6 +198,24 @@ public class RemoteService extends Service {
             setVoice(intent.getBooleanExtra(EXTRA_ENABLED, false));
             return START_STICKY;
         }
+        if (ACTION_MODE.equals(action)) {
+            String m = intent.getStringExtra(EXTRA_MODE);
+            if (LOCAL_MODE.equals(m) || REMOTE_MODE.equals(m)) {
+                boolean wasOn = isVoiceOn;
+                setVoice(false);                      // 换模式要先把旧链路停干净
+                voiceMode = m;
+                getSharedPreferences(PREFS, MODE_PRIVATE)
+                        .edit().putString(KEY_MODE, m).apply();
+                if (wasOn) {
+                    setVoice(true);                   // 原来是开着的就按新模式重开
+                } else {
+                    status(LOCAL_MODE.equals(m)
+                            ? "📴 已切到手机独立模式（不需要电脑）"
+                            : "🔗 已切到连电脑模式");
+                }
+            }
+            return START_STICKY;
+        }
         if (ACTION_CONTINUOUS.equals(action)) {
             boolean on = intent.getBooleanExtra(EXTRA_ENABLED, false);
             if (voice != null) {
@@ -197,6 +231,14 @@ public class RemoteService extends Service {
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_HOST, host).apply();
         }
         if (url == null) {
+            // 没填过地址 = 从没连过电脑。**本地模式要放行**，不能直接退出：
+            // 手机独立模式压根不需要电脑，这里 stopRemote 会让"从没连过电脑的用户开不了机"
+            if (LOCAL_MODE.equals(voiceMode)) {
+                startForegroundWithType(isVoiceOn);
+                broadcastState(true);
+                status("📴 手机独立模式（不需要电脑）");
+                return START_STICKY;
+            }
             stopRemote();
             return START_NOT_STICKY;
         }
@@ -259,6 +301,23 @@ public class RemoteService extends Service {
         broadcastState(running);     // 让界面那行"设备通道"跟着变
     }
 
+    /** 把指令的执行结果回执给电脑（带上原指令的 id，让电脑那边能对上号）。 */
+    private void replyResult(String id, boolean ok, String detail) {
+        WebSocket ws = socket;
+        if (ws == null || id == null || id.isEmpty()) {
+            return;
+        }
+        try {
+            JSONObject o = new JSONObject();
+            o.put("type", "result");
+            o.put("id", id);
+            o.put("ok", ok);
+            o.put("detail", detail == null ? "" : detail);
+            ws.send(o.toString());
+        } catch (Exception ignored) {
+        }
+    }
+
     private void retry() {
         if (!running) {
             return;
@@ -276,11 +335,14 @@ public class RemoteService extends Service {
                 boolean ok = QQMusic.play(this, songmid);
                 status(ok ? "▶ 正在播放《" + name + "》"
                           : "⚠️ 没能调起 QQ 音乐（装了吗？）");
+                replyResult(msg.optString("id"), ok, ok ? "" : "没能调起 QQ 音乐（手机上装了吗？）");
             } else if ("media".equals(type)) {
                 String action = msg.optString("action");
-                boolean ok = MediaListener.control(action);
-                status(ok ? "🎛 已发送 " + action
-                          : "⚠️ 没控制成功（要授予「通知使用权」，且 QQ 音乐得在播）");
+                MediaListener.Result r = MediaListener.control(action);
+                status(r.ok ? "🎛 已发送 " + action : "⚠️ 没控制成功：" + r.detail);
+                // 回执：电脑那边只知道"指令推出去了"，不回执它就会当成成功 ——
+                // 然后 LLM 会兴高采烈地说"已经切到下一首啦"，而手机上根本没切（真发生过）
+                replyResult(msg.optString("id"), r.ok, r.detail);
             }
         } catch (Exception ignored) {
             // 协议外的消息直接忽略
@@ -291,8 +353,10 @@ public class RemoteService extends Service {
     private void setVoice(boolean enable) {
         isVoiceOn = enable;
         orbState = enable ? "idle" : "off";
+        boolean local = LOCAL_MODE.equals(voiceMode);
         if (enable) {
-            if (host == null) {
+            // 连电脑模式才需要地址；手机独立模式压根不碰电脑
+            if (!local && host == null) {
                 isVoiceOn = false;
                 orbState = "off";      // 先改状态再发广播：界面收到时要已经是对的
                 status("⚠️ 先连接服务器再开语音助手");
@@ -308,32 +372,54 @@ public class RemoteService extends Service {
             }
             startForegroundWithType(true);      // 声明麦克风类型（要已授予 RECORD_AUDIO）
             if (voice == null) {
-                voice = new VoiceClient(this, host, new VoiceClient.Listener() {
-                    @Override
-                    public void onStatus(String text) {
-                        status(text);
-                    }
-
-                    @Override
-                    public void onDialogue(String who, String text) {
-                        broadcastDialogue(who, text);
-                    }
-
-                    @Override
-                    public void onState(String state) {
-                        orbState = state;
-                    }
-                });
+                voice = local ? newLocalEngine() : new VoiceClient(this, host, uiListener);
             }
             voice.start();
-            status("🎙 语音助手已开启");
+            status(local ? "📴 手机独立模式已开启" : "🎙 语音助手已开启");
         } else {
             if (voice != null) {
                 voice.stop();
                 voice = null;
             }
+            debugText = "";
             startForegroundWithType(false);     // 退回纯数据同步类型
             status("语音助手已关闭");
+        }
+    }
+
+    /** 两条链路共用同一套界面回调：所以切模式时界面一行都不用改 */
+    private final VoiceClient.Listener uiListener = new VoiceClient.Listener() {
+        @Override
+        public void onStatus(String text) {
+            status(text);
+        }
+
+        @Override
+        public void onDialogue(String who, String text) {
+            broadcastDialogue(who, text);
+        }
+
+        @Override
+        public void onState(String state) {
+            orbState = state;
+        }
+    };
+
+    /**
+     * 手机独立模式：唤醒/识别/合成都在手机上跑（见 {@code local.LocalVoiceEngine}）。
+     *
+     * <p>端侧依赖 sherpa-onnx 的原生库，万一加载不起来（缺 so/ABI 不对）会抛 {@link Throwable}
+     * 而不是 Exception —— 所以这里 catch Throwable，并且**退回连电脑模式**，
+     * 不能让端侧的问题把已经跑通的电脑链路一起拖死。
+     */
+    private VoiceEngine newLocalEngine() {
+        try {
+            return new com.xiaoyin.remote.local.LocalVoiceEngine(this, uiListener);
+        } catch (Throwable t) {
+            voiceMode = REMOTE_MODE;
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_MODE, REMOTE_MODE).apply();
+            status("⚠️ 端侧引擎起不来（" + t.getClass().getSimpleName() + "），已退回连电脑模式");
+            return new VoiceClient(this, host, uiListener);
         }
     }
 

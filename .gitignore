@@ -23,3 +23,18 @@ web/xiaoyin-remote.apk
 
 # 备份/临时文件里可能带 Key，别提交
 .env.*
+
+# 安卓端侧语音的第三方依赖（48MB 的 AAR，不进 git；用 android/fetch_deps.py 下载）
+android/app/libs/*.aar
+# 端侧模型的候选/验证用文件（验证完只把选中的放进 assets）
+models/candidates/
+
+# 移植比对的临时产物（用例可重新生成，class 文件不需要进 git）
+android/tools/javatest/out/
+android/tools/javatest/cases/
+
+# 端侧模型（115MB，用 android/fetch_deps.py 准备，不进 git）
+android/app/src/main/assets/models/
+android/.cache/
+# 我核对 AAR 时解出来的临时目录
+aar_x/

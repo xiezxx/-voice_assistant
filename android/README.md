@@ -23,8 +23,16 @@
 
 需要：JDK 17、Android SDK（Platform 36 + Build-Tools 36）。
 
+先拉第三方二进制依赖（**不进 git**，48MB 的 AAR）：
+
 ```bash
 cd android
+python fetch_deps.py                  # 直连；不稳时加 --proxy 127.0.0.1:7893
+```
+
+再构建：
+
+```bash
 ./gradlew assembleDebug
 # 产物：app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -113,6 +121,75 @@ App 界面上会实时显示这两项是否已授予（❌ 表示对应功能会
 服务器地址和权限收在右上角「⚙ 设置」里，默认不展开。
 
 > 回复的语音由手机播出来；播报中直接说话可以打断（和你打断真人一样）。
+
+## 端侧语音（开发中）：依赖与事实清单
+
+目标：**不连电脑也能用**——唤醒词、识别、合成都跑在手机上，只有大模型对话联网。
+下面这些是动手前实测出来的事实，别再靠猜（每条都验证过）。
+
+### sherpa-onnx 的 Android AAR
+
+| 项 | 实测值 |
+|---|---|
+| 版本 | `sherpa-onnx-1.13.8.aar`，47.8 MB（和电脑上 Python 包同版本） |
+| 获取 | `python fetch_deps.py`（支持断点续传，直连不稳就 `--proxy`） |
+| 原生库 | `jni/<abi>/lib{onnxruntime,sherpa-onnx-c-api,sherpa-onnx-cxx-api,sherpa-onnx-jni}.so`，arm64-v8a 合计 **31.9 MB** |
+| ABI | arm64-v8a / armeabi-v7a / x86 / x86_64，**用 `abiFilters` 只留 arm64-v8a**，否则白背 3 份 |
+| API 语言 | **Kotlin 编译产物**（`Compiled from "KeywordSpotter.kt"`）→ 需要 `kotlin-stdlib` 依赖 |
+| 引法 | 本地 AAR：`implementation(files("libs/sherpa-onnx-1.13.8.aar"))`。**别用 JitPack**——本工程仓库全走阿里云镜像，而阿里云不代理 jitpack |
+
+**两个必须照做、否则会浪费一整轮调试的点：**
+
+1. **绝对不要额外加 `com.microsoft.onnxruntime:onnxruntime-android`** —— AAR 里已经自带编译好的
+   `libonnxruntime.so`，再引一个别的版本就是 `UnsatisfiedLinkError: OrtGetApiBase` 的成因。
+2. **构造器只认 `AssetManager`**：`KeywordSpotter(AssetManager, Config)`、
+   `OnlineRecognizer(AssetManager, Config)`、`OfflineTts(AssetManager, Config)` ——
+   **没有文件路径版的构造器**（用 `javap` 逐个核过）。所以模型**必须放 `src/main/assets/`**，
+   配置里的路径是相对 assets 的。这反而比"首次启动解包到 filesDir"简单，不用写解包逻辑。
+
+**Java 侧的写法**（配置类都有无参构造 + setter，不用碰那个 14 参数的构造函数）：
+
+```java
+FeatureConfig feat = new FeatureConfig();
+feat.setSampleRate(16000);
+feat.setFeatureDim(80);
+OnlineModelConfig model = new OnlineModelConfig();
+model.setTransducer(transducer);
+model.setTokens("models/asr/tokens.txt");
+OnlineRecognizerConfig cfg = new OnlineRecognizerConfig();
+cfg.setFeatConfig(feat);
+cfg.setModelConfig(model);
+OnlineRecognizer rec = new OnlineRecognizer(getAssets(), cfg);   // 路径相对 assets
+```
+
+结果取值：`OnlineRecognizerResult.getText()`、`KeywordSpotterResult.getKeyword()`、
+`GeneratedAudio.getSamples()`（float[]）+ `.getSampleRate()`（喂 `AudioTrack`）。
+
+### 识别模型选型（有实测依据）
+
+用 `python test_ondevice_asr.py` 跑出来的（同一批句子、同一套打分）：
+
+| 模型 | 体积 | 平均命中率 |
+|---|---|---|
+| 电脑 Whisper base（现状） | ~145 MB | 86% |
+| **端侧 zipformer-ctc-small-zh-int8** | **63 MB** | **94%** |
+
+端侧小模型**比现在的 Whisper base 还准**（Whisper 把「设置」听成「试制」、「周杰伦的晴天」听成
+「周结论的情天」，它全对）。唯一差异是它把数字写成中文（`123456` → `十二万三千四百五十六`），
+不是错，LLM 照样看得懂。
+
+### 体积账
+
+| 组成 | 大小 |
+|---|---|
+| 现有 APK（遥控 App） | 7.2 MB |
+| AAR 原生库（arm64 only） | 31.9 MB |
+| 唤醒词 KWS 模型 | 4.9 MB |
+| 识别模型 | 63 MB |
+| **小计** | **约 107 MB** |
+| 合成模型（若不用系统 TTS） | +35 MB |
+
+因为要从局域网自己的服务器下载，一百多 MB 可以接受；真嫌大就砍 TTS 模型那 35MB（先用系统 TTS）。
 
 ## 排查
 
